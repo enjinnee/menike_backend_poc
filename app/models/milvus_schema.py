@@ -8,8 +8,8 @@ def get_experience_schema():
         # Partition Key for multi-tenancy
         FieldSchema(name="tenant_id", dtype=DataType.VARCHAR, max_length=64, is_partition_key=True),
         
-        # Vector field (Gemini 768-dim)
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=768),
+        # Vector field (User's sample uses 4 dimensions)
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=4),
         
         # Metadata storage (Flexible JSON)
         FieldSchema(name="metadata", dtype=DataType.JSON),

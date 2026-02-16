@@ -1,28 +1,6 @@
 from datetime import datetime
-from typing import List, Optional, Union
-from pydantic import BaseModel, Field, UUID4
-from enum import Enum
-
-class ExperienceType(str, Enum):
-    HIKING = "hiking"
-    CULTURAL = "cultural"
-    ADVENTURE = "adventure"
-    FOOD = "food"
-    WELLNESS = "wellness"
-    # Add more as needed
-
-class DifficultyLevel(str, Enum):
-    BEGINNER = "beginner"
-    INTERMEDIATE = "intermediate"
-    ADVANCED = "advanced"
-    EXPERT = "expert"
-
-class Season(str, Enum):
-    SPRING = "spring"
-    SUMMER = "summer"
-    AUTUMN = "autumn"
-    WINTER = "winter"
-    ALL_YEAR = "all_year"
+from typing import List, Optional, Dict
+from pydantic import BaseModel, Field
 
 class Location(BaseModel):
     latitude: float
@@ -32,7 +10,7 @@ class Location(BaseModel):
     country: str
 
 class Price(BaseModel):
-    currency: str = Field(..., pattern="^[A-Z]{3}$")
+    currency: str
     basePrice: float
     minPrice: Optional[float] = None
     maxPrice: Optional[float] = None
@@ -40,12 +18,18 @@ class Price(BaseModel):
 
 class Duration(BaseModel):
     minutes: int
-    displayText: Optional[str] = None
+    displayText: str
+
+class GroupSizeRange(BaseModel):
+    minimum: int
+    maximum: int
+
+class GroupSize(BaseModel):
+    default: GroupSizeRange
 
 class Media(BaseModel):
     url: str
-    type: str  # 'image' or 'video'
-    thumbnailUrl: Optional[str] = None
+    type: str
 
 class CachedVideo(BaseModel):
     id: str
@@ -55,18 +39,17 @@ class CachedVideo(BaseModel):
 
 class Review(BaseModel):
     user: str
-    rating: float
     comment: str
+    rating: float
     date: datetime
 
 class ReviewAggregate(BaseModel):
     averageRating: float
     totalReviews: int
 
-class AvailabilityWindow(BaseModel):
+class Availability(BaseModel):
     startDate: datetime
     endDate: datetime
-    isAvailable: bool = True
 
 class EmbeddingMetadata(BaseModel):
     model: str
@@ -74,62 +57,35 @@ class EmbeddingMetadata(BaseModel):
     version: str
 
 class Experience(BaseModel):
-    # Core identifiers
-    id: str # UUID
+    id: str
     tenantId: str
-    
-    # Basic info
     name: str
     description: str
-    shortDescription: str = Field(..., max_length=200)
-    
-    # Categorization
-    type: List[ExperienceType]
-    specialNeeds: List[str] = [] # e.g., 'wheelchair-accessible', 'pet-friendly'
-    
-    # Location
+    shortDescription: str
+    type: List[str]
+    specialNeeds: List[str] = []
     location: Location
-    
-    # Pricing & Duration
     price: Price
     duration: Duration
-    
-    # Difficulty & Seasons
-    difficulty: DifficultyLevel
-    bestSeasons: List[Season]
-    groupSize: dict = Field(default_factory=lambda: {"minimum": 1, "maximum": 10})
-    
-    # Media
+    difficulty: str
+    bestSeasons: List[str]
+    groupSize: GroupSize
     media: List[Media] = []
-    
-    # Video content (Manike.AI generated)
     cachedVideos: List[CachedVideo] = []
-    
-    # Reviews
     reviews: List[Review] = []
     reviewAggregate: ReviewAggregate
-    
-    # Availability
-    availability: List[AvailabilityWindow] = []
-    
-    # Additional metadata
+    availability: List[Availability] = []
     additionalInfo: Optional[str] = None
     tags: List[str] = []
     inclusions: List[str] = []
     exclusions: List[str] = []
     cancellationPolicy: Optional[str] = None
-    
-    # SEO & Engagement
     slug: str
     viewCount: int = 0
     bookingCount: int = 0
     favoriteCount: int = 0
-    
-    # Vector embedding
-    embedding: List[float] # 768-dimensional Gemini embedding
+    embedding: List[float]
     embeddingMetadata: EmbeddingMetadata
-    
-    # Audit fields
     isActive: bool = True
     createdAt: datetime = Field(default_factory=datetime.utcnow)
     updatedAt: datetime = Field(default_factory=datetime.utcnow)
@@ -138,4 +94,6 @@ class Experience(BaseModel):
     updatedBy: str
 
     class Config:
-        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }

@@ -23,7 +23,6 @@ class MilvusClient:
     def create_collection(self, collection_name, schema):
         if not utility.has_collection(collection_name):
             collection = Collection(name=collection_name, schema=schema)
-            
             # Create HNSW index for any vector field in the schema
             for field in schema.fields:
                 if field.dtype in [DataType.FLOAT_VECTOR, DataType.BINARY_VECTOR]:
@@ -33,11 +32,28 @@ class MilvusClient:
                         "params": {"M": 8, "efConstruction": 64}
                     }
                     collection.create_index(field_name=field.name, index_params=index_params)
-            
             collection.load()
             print(f"Collection {collection_name} created and loaded.")
         else:
-            print(f"Collection {collection_name} already exists.")
+            collection = Collection(collection_name)
+            # Check if index exists
+            has_index = False
+            for field in schema.fields:
+                if field.dtype in [DataType.FLOAT_VECTOR, DataType.BINARY_VECTOR]:
+                    if collection.has_index(field_name=field.name):
+                        has_index = True
+                    else:
+                        # Release to create index
+                        collection.release()
+                        index_params = {
+                            "metric_type": "COSINE",
+                            "index_type": "HNSW",
+                            "params": {"M": 8, "efConstruction": 64}
+                        }
+                        collection.create_index(field_name=field.name, index_params=index_params)
+                        has_index = True
+            collection.load()
+            print(f"Collection {collection_name} already exists and is now loaded (index checked).")
 
     def insert_experience(self, data):
         collection = Collection(COLLECTION_NAME)
@@ -52,7 +68,17 @@ class MilvusClient:
             param={"metric_type": "COSINE", "params": {"ef": 64}},
             limit=limit,
             expr=f"tenant_id == '{tenant_id}'",
-            output_fields=["id", "metadata"]
+            output_fields=["id", "metadata", "slug"]
+        )
+        return res
+
+    def list_experiences(self, limit=100):
+        collection = Collection(COLLECTION_NAME)
+        res = collection.query(
+            expr="",
+            limit=limit,
+            output_fields=["id", "tenant_id", "metadata", "slug", "embedding"],
+            consistency_level="Strong"
         )
         return res
 
