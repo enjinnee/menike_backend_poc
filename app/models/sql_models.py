@@ -14,16 +14,17 @@ class Tenant(SQLModel, table=True):
 
 class User(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
-    tenant_id: str = Field(foreign_key="tenant.id")
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
     email: str = Field(unique=True, index=True)
     hashed_password: str
+    role: str = Field(default="tenant_admin", index=True)  # super_admin, tenant_admin, user
     is_active: bool = True
     full_name: Optional[str] = None
 
 
 class Scene(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
-    tenant_id: str = Field(foreign_key="tenant.id")
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
     name: str
     description: Optional[str] = None
     status: str = "pending"  # pending, processing, completed, failed
@@ -80,14 +81,15 @@ class Itinerary(SQLModel, table=True):
 class ItineraryActivity(SQLModel, table=True):
     __tablename__ = "itinerary_activity"
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
     itinerary_id: str = Field(foreign_key="itinerary.id", index=True)
     day: int
     activity_name: str                      # e.g. "Visit Galle Fort"
     location: Optional[str] = None          # e.g. "Galle"
     keywords: str                           # comma-separated for matching: "galle,fort,heritage"
-    image_id: Optional[str] = Field(default=None, foreign_key="image_library.id")
+    image_id: Optional[str] = Field(default=None, foreign_key="image_library.id", index=True)
     image_url: Optional[str] = None         # denormalized for quick access
-    cinematic_clip_id: Optional[str] = Field(default=None, foreign_key="cinematic_clip.id")
+    cinematic_clip_id: Optional[str] = Field(default=None, foreign_key="cinematic_clip.id", index=True)
     cinematic_clip_url: Optional[str] = None  # denormalized for quick access
     order_index: int = 0                    # for ordering clips in final video
 
@@ -99,7 +101,7 @@ class FinalVideo(SQLModel, table=True):
     __tablename__ = "final_video"
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     tenant_id: str = Field(foreign_key="tenant.id", index=True)
-    itinerary_id: str = Field(foreign_key="itinerary.id", index=True)
+    itinerary_id: str = Field(foreign_key="itinerary.id", index=True, unique=True)
     video_url: str                          # S3 URL of final compiled video
     duration: Optional[float] = None        # total seconds
     status: str = "compiled"                # compiled, failed

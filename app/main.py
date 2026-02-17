@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
-from app.api import auth, scenes, itinerary, experiences, tenants, images, cinematic_clips
+from app.api import auth, scenes, itinerary, experiences, tenants, images, cinematic_clips, admin
 from app.core.database import create_db_and_tables
 from app.models.milvus_schema import (
     get_experience_schema, get_tenant_schema, 
@@ -49,6 +49,7 @@ app.include_router(images.router)
 app.include_router(cinematic_clips.router)
 app.include_router(experiences.router)
 app.include_router(tenants.router)
+app.include_router(admin.router)
 
 
 @app.get("/", include_in_schema=False)

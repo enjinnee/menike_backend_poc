@@ -65,3 +65,12 @@ async def get_current_tenant_id(user: User = Depends(get_current_user)):
     Extracts the tenant_id from the authenticated user.
     """
     return user.tenant_id
+
+
+async def get_current_super_admin(user: User = Depends(get_current_user)):
+    if user.role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin access required",
+        )
+    return user

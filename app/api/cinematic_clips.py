@@ -1,9 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from app.core.auth import get_current_tenant_id
 from app.core.database import get_session
 from app.core.milvus_client import milvus_client
 from app.models.sql_models import CinematicClip
 from app.services.embedding import generate_embedding
+from app.services.storage import storage_service
 from sqlmodel import Session, select
 from pydantic import BaseModel
 from typing import Optional, List
@@ -11,10 +15,25 @@ from typing import Optional, List
 router = APIRouter(prefix="/cinematic-clips", tags=["Cinematic Clips (Manual Upload)"])
 
 
+def _tenant_clip_key(tenant_id: str, key: str) -> str:
+    normalized = key.strip("/")
+    tenant_prefix = f"tenants/{tenant_id}/clips/"
+    if normalized.startswith(tenant_prefix):
+        return normalized
+    if normalized.startswith(f"tenants/{tenant_id}/"):
+        filename = normalized.split("/")[-1]
+        return f"{tenant_prefix}{filename}"
+    if "/" in normalized:
+        filename = normalized.split("/")[-1]
+        return f"{tenant_prefix}{filename}"
+    return f"{tenant_prefix}{normalized}"
+
+
 class ClipCreate(BaseModel):
     name: str
     tags: str               # comma-separated: "galle,fort,drone,sunset"
-    video_url: str           # S3 URL of the pre-made clip
+    video_url: Optional[str] = None        # S3 URL of the pre-made clip
+    s3_key: Optional[str] = None           # Relative key under configured S3 base prefix
     duration: Optional[float] = None
     description: Optional[str] = None
 
@@ -54,12 +73,20 @@ async def upload_clip(
     Upload a pre-generated cinematic video clip.
     Dual-write: PostgreSQL (tracking) + Milvus (semantic search).
     """
+    if not data.video_url and not data.s3_key:
+        raise HTTPException(status_code=400, detail="Provide either video_url or s3_key")
+
+    video_url = data.video_url
+    if not video_url:
+        tenant_safe_key = _tenant_clip_key(tenant_id, data.s3_key or "")
+        video_url = storage_service.get_url(tenant_safe_key)
+
     # 1. Save to PostgreSQL (tracking)
     clip = CinematicClip(
         tenant_id=tenant_id,
         name=data.name,
         tags=data.tags.lower(),
-        video_url=data.video_url,
+        video_url=video_url,
         duration=data.duration,
         description=data.description,
     )
@@ -73,9 +100,55 @@ async def upload_clip(
     metadata = {
         "name": data.name,
         "tags": data.tags.lower(),
-        "video_url": data.video_url,
+        "video_url": video_url,
         "duration": data.duration,
         "pg_id": clip.id,  # Link back to PostgreSQL
+    }
+    milvus_client.insert_clip_vector(clip.id, tenant_id, embedding, metadata)
+
+    return ClipResponse(
+        id=clip.id, tenant_id=clip.tenant_id, name=clip.name,
+        tags=clip.tags, video_url=clip.video_url,
+        duration=clip.duration, description=clip.description,
+        created_at=str(clip.created_at),
+    )
+
+
+@router.post("/upload-file", response_model=ClipResponse)
+async def upload_clip_file(
+    name: str = Form(...),
+    tags: str = Form(...),
+    duration: Optional[float] = Form(default=None),
+    description: Optional[str] = Form(default=None),
+    file: UploadFile = File(...),
+    tenant_id: str = Depends(get_current_tenant_id),
+    session: Session = Depends(get_session),
+):
+    content = await file.read()
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".mp4"
+    object_key = f"tenants/{tenant_id}/clips/{uuid.uuid4()}{ext}"
+    video_url = storage_service.upload_bytes(content, object_key, file.content_type)
+
+    clip = CinematicClip(
+        tenant_id=tenant_id,
+        name=name,
+        tags=tags.lower(),
+        video_url=video_url,
+        duration=duration,
+        description=description,
+    )
+    session.add(clip)
+    session.commit()
+    session.refresh(clip)
+
+    text_for_embedding = f"{name} {tags} {description or ''}"
+    embedding = generate_embedding(text_for_embedding)
+    metadata = {
+        "name": name,
+        "tags": tags.lower(),
+        "video_url": video_url,
+        "duration": duration,
+        "pg_id": clip.id,
     }
     milvus_client.insert_clip_vector(clip.id, tenant_id, embedding, metadata)
 

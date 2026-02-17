@@ -92,6 +92,7 @@ async def generate_itinerary(
         matched_clip = match_clip(tenant_id, query_text)
 
         activity = ItineraryActivity(
+            tenant_id=tenant_id,
             itinerary_id=itinerary.id,
             day=raw["day"],
             activity_name=raw["activity_name"],
@@ -133,6 +134,7 @@ async def list_itineraries(
         activities = session.exec(
             select(ItineraryActivity)
             .where(ItineraryActivity.itinerary_id == itin.id)
+            .where(ItineraryActivity.tenant_id == tenant_id)
             .order_by(ItineraryActivity.order_index)
         ).all()
         results.append(_build_response(itin, activities, session))
@@ -156,6 +158,7 @@ async def get_itinerary(
     activities = session.exec(
         select(ItineraryActivity)
         .where(ItineraryActivity.itinerary_id == itinerary.id)
+        .where(ItineraryActivity.tenant_id == tenant_id)
         .order_by(ItineraryActivity.order_index)
     ).all()
 
@@ -186,6 +189,7 @@ async def compile_video(
     activities = session.exec(
         select(ItineraryActivity)
         .where(ItineraryActivity.itinerary_id == itinerary_id)
+        .where(ItineraryActivity.tenant_id == tenant_id)
         .order_by(ItineraryActivity.order_index)
     ).all()
 
@@ -206,7 +210,7 @@ async def compile_video(
     final_local = media_processor.stitch_scenes(clip_urls, output_path)
 
     # Upload to S3
-    s3_key = f"tenants/{tenant_id}/final_videos/{itinerary.id}.mp4"
+    s3_key = f"tenants/{tenant_id}/final-video/{itinerary.id}.mp4"
     final_url = storage_service.upload_file(final_local, s3_key)
 
     # Save to DB
