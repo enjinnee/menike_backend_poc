@@ -3,12 +3,14 @@ from sqlmodel import SQLModel, Field, Relationship
 from datetime import datetime
 import uuid
 
+
 class Tenant(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str
     api_key: str
-    config: Optional[str] = None # JSON string
+    config: Optional[str] = None  # JSON string
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 class User(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
@@ -18,12 +20,87 @@ class User(SQLModel, table=True):
     is_active: bool = True
     full_name: Optional[str] = None
 
+
 class Scene(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     tenant_id: str = Field(foreign_key="tenant.id")
     name: str
     description: Optional[str] = None
-    status: str = "pending" # pending, processing, completed, failed
+    status: str = "pending"  # pending, processing, completed, failed
     media_url: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# NEW: Image Library - pre-stored location images (tenant-wise)
+# ---------------------------------------------------------------------------
+class ImageLibrary(SQLModel, table=True):
+    __tablename__ = "image_library"
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
+    name: str                               # e.g. "Galle Fort Sunset"
+    tags: str                               # comma-separated: "galle,fort,sunset,heritage"
+    location: Optional[str] = None          # e.g. "Galle, Sri Lanka"
+    image_url: str                          # S3 URL
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# NEW: Cinematic Clips - manually uploaded video clips (tenant-wise)
+# ---------------------------------------------------------------------------
+class CinematicClip(SQLModel, table=True):
+    __tablename__ = "cinematic_clip"
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
+    name: str                               # e.g. "Galle Fort Drone Shot"
+    tags: str                               # comma-separated: "galle,fort,drone,sunset"
+    video_url: str                          # S3 URL of the pre-made clip
+    duration: Optional[float] = None        # seconds
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# NEW: Itinerary - generated travel plans
+# ---------------------------------------------------------------------------
+class Itinerary(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
+    prompt: str                             # original user prompt
+    destination: str
+    days: int
+    status: str = "generated"               # generated, video_compiled
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# NEW: Itinerary Activities - each day/activity with linked media
+# ---------------------------------------------------------------------------
+class ItineraryActivity(SQLModel, table=True):
+    __tablename__ = "itinerary_activity"
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    itinerary_id: str = Field(foreign_key="itinerary.id", index=True)
+    day: int
+    activity_name: str                      # e.g. "Visit Galle Fort"
+    location: Optional[str] = None          # e.g. "Galle"
+    keywords: str                           # comma-separated for matching: "galle,fort,heritage"
+    image_id: Optional[str] = Field(default=None, foreign_key="image_library.id")
+    image_url: Optional[str] = None         # denormalized for quick access
+    cinematic_clip_id: Optional[str] = Field(default=None, foreign_key="cinematic_clip.id")
+    cinematic_clip_url: Optional[str] = None  # denormalized for quick access
+    order_index: int = 0                    # for ordering clips in final video
+
+
+# ---------------------------------------------------------------------------
+# NEW: Final Video - compiled cinematic output
+# ---------------------------------------------------------------------------
+class FinalVideo(SQLModel, table=True):
+    __tablename__ = "final_video"
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
+    itinerary_id: str = Field(foreign_key="itinerary.id", index=True)
+    video_url: str                          # S3 URL of final compiled video
+    duration: Optional[float] = None        # total seconds
+    status: str = "compiled"                # compiled, failed
+    created_at: datetime = Field(default_factory=datetime.utcnow)

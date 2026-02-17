@@ -1,9 +1,15 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
-from app.api import auth, scenes, itinerary, experiences, tenants
+from app.api import auth, scenes, itinerary, experiences, tenants, images, cinematic_clips
 from app.core.database import create_db_and_tables
-from app.models.milvus_schema import get_experience_schema, get_tenant_schema
-from app.core.milvus_client import milvus_client, COLLECTION_NAME, TENANT_COLLECTION_NAME
+from app.models.milvus_schema import (
+    get_experience_schema, get_tenant_schema, 
+    get_image_vector_schema, get_clip_vector_schema
+)
+from app.core.milvus_client import (
+    milvus_client, COLLECTION_NAME, TENANT_COLLECTION_NAME,
+    IMAGE_COLLECTION_NAME, CLIP_COLLECTION_NAME
+)
 
 app = FastAPI(
     title="Manike B2B AI Engine", 
@@ -24,16 +30,26 @@ async def startup_event():
     try:
         exp_schema = get_experience_schema()
         milvus_client.create_collection(COLLECTION_NAME, exp_schema)
+        
         tenant_schema = get_tenant_schema()
         milvus_client.create_collection(TENANT_COLLECTION_NAME, tenant_schema)
+        
+        img_schema = get_image_vector_schema()
+        milvus_client.create_collection(IMAGE_COLLECTION_NAME, img_schema)
+        
+        clip_schema = get_clip_vector_schema()
+        milvus_client.create_collection(CLIP_COLLECTION_NAME, clip_schema)
     except Exception:
         pass
 
 app.include_router(auth.router)
 app.include_router(scenes.router)
 app.include_router(itinerary.router)
+app.include_router(images.router)
+app.include_router(cinematic_clips.router)
 app.include_router(experiences.router)
 app.include_router(tenants.router)
+
 
 @app.get("/", include_in_schema=False)
 async def root():
