@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.auth import get_current_tenant_id
+from app.core.auth import get_current_tenant_id, get_current_user
 from app.core.database import get_session
 from app.models.sql_models import (
-    Itinerary, ItineraryActivity, ImageLibrary, CinematicClip, FinalVideo
+    Itinerary, ItineraryActivity, ImageLibrary, CinematicClip, FinalVideo, User
 )
 from app.services.generators import ItineraryGenerator
 from app.services.matcher import match_image, match_clip
 from app.services.media_processor import MediaProcessor
 from app.services.storage import storage_service
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from pydantic import BaseModel
 from typing import List, Optional
@@ -185,6 +186,25 @@ async def compile_video(
     if not itinerary or itinerary.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Itinerary not found")
 
+    # Idempotent behavior: if a final video already exists for this itinerary,
+    # return it instead of compiling and inserting a duplicate row.
+    existing_final = session.exec(
+        select(FinalVideo)
+        .where(FinalVideo.itinerary_id == itinerary.id)
+        .where(FinalVideo.tenant_id == tenant_id)
+    ).first()
+    if existing_final:
+        return {
+            "message": "Final cinematic video already compiled",
+            "final_video": {
+                "id": existing_final.id,
+                "video_url": existing_final.video_url,
+                "itinerary_id": existing_final.itinerary_id,
+                "status": existing_final.status,
+                "clips_used": None,
+            }
+        }
+
     # Get activities in order
     activities = session.exec(
         select(ItineraryActivity)
@@ -225,8 +245,29 @@ async def compile_video(
     # Update itinerary status
     itinerary.status = "video_compiled"
     session.add(itinerary)
-    session.commit()
-    session.refresh(final_video)
+    try:
+        session.commit()
+        session.refresh(final_video)
+    except IntegrityError:
+        # A concurrent request may have inserted the final video first.
+        session.rollback()
+        existing_final = session.exec(
+            select(FinalVideo)
+            .where(FinalVideo.itinerary_id == itinerary.id)
+            .where(FinalVideo.tenant_id == tenant_id)
+        ).first()
+        if existing_final:
+            return {
+                "message": "Final cinematic video already compiled",
+                "final_video": {
+                    "id": existing_final.id,
+                    "video_url": existing_final.video_url,
+                    "itinerary_id": existing_final.itinerary_id,
+                    "status": existing_final.status,
+                    "clips_used": len(clip_urls),
+                }
+            }
+        raise
 
     return {
         "message": "Final cinematic video compiled successfully",
@@ -237,6 +278,53 @@ async def compile_video(
             "status": final_video.status,
             "clips_used": len(clip_urls),
         }
+    }
+
+
+# ---------------------------------------------------------------------------
+# DELETE /itinerary/{id} - Delete itinerary and related records
+# ---------------------------------------------------------------------------
+@router.delete("/{itinerary_id}")
+async def delete_itinerary(
+    itinerary_id: str,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Delete an itinerary and its related activities/final video."""
+    tenant_id = current_user.tenant_id
+    is_super_admin = current_user.role == "super_admin"
+
+    itinerary = session.get(Itinerary, itinerary_id)
+    if not itinerary:
+        raise HTTPException(status_code=404, detail="Itinerary not found")
+    if not is_super_admin and itinerary.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Itinerary not found")
+
+    final_video_stmt = select(FinalVideo).where(FinalVideo.itinerary_id == itinerary.id)
+    if not is_super_admin:
+        final_video_stmt = final_video_stmt.where(FinalVideo.tenant_id == tenant_id)
+    final_video = session.exec(final_video_stmt).first()
+    if final_video:
+        session.delete(final_video)
+
+    activities_stmt = select(ItineraryActivity).where(ItineraryActivity.itinerary_id == itinerary.id)
+    if not is_super_admin:
+        activities_stmt = activities_stmt.where(ItineraryActivity.tenant_id == tenant_id)
+    activities = session.exec(activities_stmt).all()
+    for activity in activities:
+        session.delete(activity)
+
+    # Ensure child rows are deleted before deleting the parent itinerary.
+    session.flush()
+
+    session.delete(itinerary)
+    session.commit()
+
+    return {
+        "message": "Itinerary deleted successfully",
+        "itinerary_id": itinerary_id,
+        "deleted_activities": len(activities),
+        "deleted_final_video": bool(final_video),
     }
 
 
