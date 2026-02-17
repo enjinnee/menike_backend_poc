@@ -31,6 +31,11 @@ class TenantAdminCreateResponse(BaseModel):
     admin_role: str
 
 
+class AdminPasswordResetRequest(BaseModel):
+    email: str
+    new_password: str
+
+
 @router.post("/tenants", response_model=TenantAdminCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_tenant_with_admin(
     payload: TenantAdminCreateRequest,
@@ -91,3 +96,24 @@ async def create_tenant_with_admin(
         admin_email=admin_user.email,
         admin_role=admin_user.role,
     )
+
+
+@router.post("/users/reset-password")
+async def reset_user_password(
+    payload: AdminPasswordResetRequest,
+    _: User = Depends(get_current_super_admin),
+    session: Session = Depends(get_session),
+):
+    user = session.exec(select(User).where(User.email == payload.email)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.hashed_password = get_password_hash(payload.new_password)
+    session.add(user)
+    session.commit()
+
+    return {
+        "message": "Password reset successful",
+        "user_id": user.id,
+        "email": user.email,
+    }

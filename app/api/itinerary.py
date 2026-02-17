@@ -8,6 +8,7 @@ from app.services.generators import ItineraryGenerator
 from app.services.matcher import match_image, match_clip
 from app.services.media_processor import MediaProcessor
 from app.services.storage import storage_service
+import subprocess
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from pydantic import BaseModel
@@ -83,14 +84,17 @@ async def generate_itinerary(
 
     # Step 3: Match each activity using Milvus semantic search
     activities = []
+    used_image_ids = set()
     for idx, raw in enumerate(raw_activities):
         # Construct query text for semantic search
         query_text = f"{raw['activity_name']} {raw['keywords']}"
 
         # Match image (semantic search)
-        matched_image = match_image(tenant_id, query_text)
+        matched_image = match_image(tenant_id, query_text, exclude_ids=used_image_ids)
         # Match cinematic clip (semantic search)
         matched_clip = match_clip(tenant_id, query_text)
+        if matched_image:
+            used_image_ids.add(matched_image.id)
 
         activity = ItineraryActivity(
             tenant_id=tenant_id,
@@ -227,7 +231,13 @@ async def compile_video(
 
     # Stitch all clips together
     output_path = f"/tmp/final_video_{itinerary.id}.mp4"
-    final_local = media_processor.stitch_scenes(clip_urls, output_path)
+    try:
+        final_local = media_processor.stitch_scenes(clip_urls, output_path)
+    except subprocess.CalledProcessError:
+        raise HTTPException(
+            status_code=422,
+            detail="Unable to compile final video due to incompatible clip encoding/timestamps."
+        )
 
     # Upload to S3
     s3_key = f"tenants/{tenant_id}/final-video/{itinerary.id}.mp4"

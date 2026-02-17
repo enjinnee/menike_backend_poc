@@ -49,9 +49,10 @@ class MediaProcessor:
 
         # 1. Create a temporary text file listing all videos
         # absolute path for safety
-        list_file_path = f"/tmp/inputs_{os.getpid()}.txt" 
+        list_file_path = f"/tmp/inputs_{os.getpid()}.txt"
         local_inputs = []
         downloaded_paths = []
+        normalized_paths = []
         
         try:
             for path in video_paths:
@@ -60,22 +61,49 @@ class MediaProcessor:
                 if local_path != path:
                     downloaded_paths.append(local_path)
 
+            # Normalize each clip to a stable baseline so concat is reliable.
+            # This avoids DTS/codec mismatches that can produce audio-only playback.
+            for idx, path in enumerate(local_inputs):
+                normalized_path = os.path.join(
+                    tempfile.gettempdir(),
+                    f"normalized_{os.getpid()}_{idx}.mp4",
+                )
+                normalize_cmd = [
+                    "ffmpeg",
+                    "-i", path,
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "23",
+                    "-pix_fmt", "yuv420p",
+                    "-r", "30",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "48000",
+                    "-ac", "2",
+                    "-movflags", "+faststart",
+                    "-y",
+                    normalized_path,
+                ]
+                subprocess.run(
+                    normalize_cmd,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                normalized_paths.append(normalized_path)
+
             with open(list_file_path, "w") as f:
-                for path in local_inputs:
+                for path in normalized_paths:
                     # Escape single quotes in filenames for ffmpeg concat demuxer
                     safe_path = path.replace("'", "'\\''")
                     f.write(f"file '{safe_path}'\n")
             
-            # 2. Run FFmpeg command to concat them
-            # -f concat: use the concat demuxer
-            # -safe 0: allow unsafe file paths (sometimes needed)
-            # -c copy: copy streams without re-encoding (FASTEST method)
-            # If formats differ, remove "-c", "copy" and let it re-encode (slower but safer)
+            # 2. Concatenate normalized clips
             cmd = [
-                "ffmpeg", 
-                "-f", "concat", 
-                "-safe", "0", 
-                "-i", list_file_path, 
+                "ffmpeg",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", list_file_path,
                 "-c", "copy",
                 "-y",  # Overwrite output if exists
                 output_path
@@ -96,6 +124,9 @@ class MediaProcessor:
             if os.path.exists(list_file_path):
                 os.remove(list_file_path)
             for path in downloaded_paths:
+                if os.path.exists(path):
+                    os.remove(path)
+            for path in normalized_paths:
                 if os.path.exists(path):
                     os.remove(path)
                 
