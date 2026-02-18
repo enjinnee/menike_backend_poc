@@ -68,10 +68,12 @@ class CinematicClip(SQLModel, table=True):
 class Itinerary(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     tenant_id: str = Field(foreign_key="tenant.id", index=True)
-    prompt: str                             # original user prompt
+    prompt: str                             # original user prompt / conversation summary
     destination: str
     days: int
     status: str = "generated"               # generated, video_compiled
+    rich_itinerary_json: Optional[str] = Field(default=None)  # Full AI-generated JSON
+    user_email: Optional[str] = Field(default=None)           # Traveler's email
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

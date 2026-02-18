@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from app.api import auth, scenes, itinerary, experiences, tenants, images, cinematic_clips, admin
+from app.api import chat as chat_api
+from app.api import pages as pages_api
 from app.core.database import create_db_and_tables
 from app.models.milvus_schema import (
     get_experience_schema, get_tenant_schema, 
@@ -12,10 +15,13 @@ from app.core.milvus_client import (
 )
 
 app = FastAPI(
-    title="Manike B2B AI Engine", 
+    title="Manike B2B AI Engine",
     version="2.0.0",
     description="Multi-tenant AI Scene Orchestrator and Itinerary Engine"
 )
+
+# Serve static files (CSS, JS)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.on_event("startup")
@@ -42,7 +48,9 @@ async def startup_event():
     except Exception:
         pass
 
+app.include_router(pages_api.router)
 app.include_router(auth.router)
+app.include_router(chat_api.router)
 app.include_router(scenes.router)
 app.include_router(itinerary.router)
 app.include_router(images.router)
@@ -52,8 +60,8 @@ app.include_router(tenants.router)
 app.include_router(admin.router)
 
 
-@app.get("/", include_in_schema=False)
-async def root():
+@app.get("/docs-api", include_in_schema=False)
+async def api_docs():
     return RedirectResponse(url="/docs")
 
 if __name__ == "__main__":

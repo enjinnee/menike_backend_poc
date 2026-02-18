@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manike.AI - Your AI-Powered Travel Planner</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1 class="logo">🏛️ Manike.AI</h1>
+                <p class="tagline">Your Sri Lankan Travel Planner</p>
+            </div>
+
+            <button id="newChatBtn" class="btn btn-primary btn-full">
+                + New Chat
+            </button>
+
+            <div class="sidebar-section">
+                <h3>About</h3>
+                <p class="sidebar-text">
+                    Chat with your AI travel agent to plan your perfect trip. Tell us about your destination, dates, and preferences, then generate your personalized itinerary.
+                </p>
+            </div>
+
+            <div class="sidebar-section">
+                <h3>Features</h3>
+                <ul class="feature-list">
+                    <li>💬 Natural conversation</li>
+                    <li>📅 Smart scheduling</li>
+                    <li>💰 Budget planning</li>
+                    <li>📍 Location mapping</li>
+                    <li>🖼️ AI image matching</li>
+                    <li>🎬 Cinematic clips</li>
+                    <li>📥 JSON export</li>
+                </ul>
+            </div>
+
+            <div style="margin-top: auto; padding-top: 24px;">
+                <button id="logoutBtn" class="btn btn-full" style="background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer;">
+                    Logout
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <div class="chat-header">
+                <div class="header-content">
+                    <h2>Manike.AI Chat</h2>
+                    <p id="headerStatus" class="header-status">Ready to help</p>
+                </div>
+                <div class="header-actions">
+                    <button id="videoModeToggle" class="btn btn-secondary video-mode-btn" style="display: none;">
+                        <span class="video-icon">🎥</span> Video Mode
+                    </button>
+                    <button id="exportBtn" class="btn btn-secondary" style="display: none;">
+                        📥 Export Itinerary
+                    </button>
+                </div>
+            </div>
+
+            <!-- Avatar Video Container (hidden by default) -->
+            <div id="avatarContainer" class="avatar-container" style="display: none;">
+                <video id="avatarVideo" autoplay playsinline></video>
+                <div class="avatar-status">
+                    <span id="avatarStatus">Initializing...</span>
+                </div>
+            </div>
+
+            <div id="chatMessages" class="chat-messages">
+                <div class="message assistant-message">
+                    <div class="message-avatar">🤖</div>
+                    <div class="message-content">
+                        <p>Hello! I'm your AI travel planning assistant. I'm here to help you create the perfect itinerary for your next adventure!</p>
+                        <p>Let's get started. Could you tell me:</p>
+                        <ul>
+                            <li>What's your name?</li>
+                            <li>Where are you thinking of traveling?</li>
+                            <li>When would you like to travel?</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input-area">
+                <!-- Text Input Mode -->
+                <div id="inputContainer" class="input-container">
+                    <input
+                        type="text"
+                        id="messageInput"
+                        class="message-input"
+                        placeholder="Type your travel preferences here..."
+                        autocomplete="off"
+                    >
+                    <button id="sendBtn" class="btn btn-send">
+                        <span>Send</span>
+                        <span class="send-icon">-></span>
+                    </button>
+                </div>
+
+                <!-- Voice Input Mode (hidden by default) -->
+                <div id="voiceInputContainer" class="voice-input-container" style="display: none;">
+                    <div class="voice-status-main">
+                        <span id="voiceStatus">Initializing...</span>
+                    </div>
+                    <div class="voice-transcript-area">
+                        <span id="interimTranscript" class="interim-transcript"></span>
+                    </div>
+                    <div class="voice-controls">
+                        <button id="voiceButton" class="btn btn-voice-mute" title="Tap to mute/unmute">
+                            <span class="mic-icon">🎤</span>
+                        </button>
+                        <button id="exitVideoMode" class="btn btn-secondary btn-small">
+                            Exit Video Mode
+                        </button>
+                    </div>
+                </div>
+
+                <div id="actionButtons" class="action-buttons" style="display: none;">
+                    <button id="generateBtn" class="btn btn-success">
+                        🎯 Generate Itinerary
+                    </button>
+                </div>
+
+                <div id="loadingSpinner" class="loading-spinner" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Generating your itinerary with AI + media matching...</p>
+                </div>
+            </div>
+        </main>
+
+        <!-- Itinerary Panel -->
+        <aside id="itineraryPanel" class="itinerary-panel" style="display: none;">
+            <div class="panel-header">
+                <h3>Your Itinerary</h3>
+                <button id="closePanel" class="close-btn">×</button>
+            </div>
+
+            <div id="itineraryContent" class="itinerary-content">
+                <!-- Itinerary will be rendered here -->
+            </div>
+        </aside>
+    </div>
+
+    <!-- Modal for Email Input -->
+    <div id="emailModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h2>Ready to Generate?</h2>
+            <p>Please confirm your email address to generate your itinerary.</p>
+            <input
+                type="email"
+                id="modalEmailInput"
+                class="modal-input"
+                placeholder="your.email@example.com"
+                required
+            >
+            <div class="modal-buttons">
+                <button id="confirmGenerateBtn" class="btn btn-success">Generate Itinerary</button>
+                <button id="cancelGenerateBtn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sticky Video Player Bar -->
+    <div id="videoBar" class="video-bar" style="display:none;">
+        <div class="video-bar-header">
+            <span>🎬 Your Cinematic Trip Video</span>
+            <div class="video-bar-actions">
+                <a id="downloadVideoLink" href="#" download="cinematic-trip.mp4" class="btn btn-download" style="display:none;">⬇ Download</a>
+                <button id="closeVideoBar" class="close-btn">×</button>
+            </div>
+        </div>
+        <video id="finalVideoPlayer" class="final-video-player" controls autoplay>
+            Your browser does not support the video tag.
+        </video>
+    </div>
+
+    <!-- Voice Input Manager -->
+    <script src="/static/js/voice-input.js"></script>
+    <!-- HeyGen Avatar Manager -->
+    <script src="/static/js/heygen-avatar.js"></script>
+    <!-- Main Application -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

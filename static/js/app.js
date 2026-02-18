@@ -1,0 +1,617 @@
+// ---------------------------------------------------------------------------
+// JWT-aware fetch wrapper
+// ---------------------------------------------------------------------------
+function authFetch(url, options = {}) {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+        window.location.href = '/auth/login';
+        return Promise.reject(new Error('No token'));
+    }
+
+    options.headers = options.headers || {};
+    options.headers['Authorization'] = `Bearer ${token}`;
+
+    return fetch(url, options).then(response => {
+        if (response.status === 401) {
+            localStorage.removeItem('access_token');
+            window.location.href = '/auth/login';
+            throw new Error('Authentication required');
+        }
+        return response;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
+let currentSessionId = null;
+let isGenerating = false;
+let videoModeEnabled = false;
+let avatarManager = null;
+let voiceInputManager = null;
+let heygenConfigured = false;
+let isProcessingVoice = false;
+let currentItinerary = null;
+
+// ---------------------------------------------------------------------------
+// DOM Elements
+// ---------------------------------------------------------------------------
+const messageInput = document.getElementById('messageInput');
+const sendBtn = document.getElementById('sendBtn');
+const chatMessages = document.getElementById('chatMessages');
+const generateBtn = document.getElementById('generateBtn');
+const actionButtons = document.getElementById('actionButtons');
+const newChatBtn = document.getElementById('newChatBtn');
+const itineraryPanel = document.getElementById('itineraryPanel');
+const itineraryContent = document.getElementById('itineraryContent');
+const closePanel = document.getElementById('closePanel');
+const emailModal = document.getElementById('emailModal');
+const modalEmailInput = document.getElementById('modalEmailInput');
+const confirmGenerateBtn = document.getElementById('confirmGenerateBtn');
+const cancelGenerateBtn = document.getElementById('cancelGenerateBtn');
+const exportBtn = document.getElementById('exportBtn');
+const loadingSpinner = document.getElementById('loadingSpinner');
+const headerStatus = document.getElementById('headerStatus');
+const inputContainer = document.getElementById('inputContainer');
+const logoutBtn = document.getElementById('logoutBtn');
+
+// Video mode elements
+const videoModeToggle = document.getElementById('videoModeToggle');
+const avatarContainer = document.getElementById('avatarContainer');
+const avatarVideo = document.getElementById('avatarVideo');
+const avatarStatus = document.getElementById('avatarStatus');
+const voiceInputContainer = document.getElementById('voiceInputContainer');
+const voiceButton = document.getElementById('voiceButton');
+const voiceStatus = document.getElementById('voiceStatus');
+const interimTranscript = document.getElementById('interimTranscript');
+const exitVideoMode = document.getElementById('exitVideoMode');
+
+// ---------------------------------------------------------------------------
+// Initialize
+// ---------------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+    if (!localStorage.getItem('access_token')) {
+        window.location.href = '/auth/login';
+        return;
+    }
+    initializeSession();
+    setupEventListeners();
+    checkHeygenConfig();
+});
+
+function initializeSession() {
+    updateHeaderStatus('Starting session...');
+    authFetch('/api/session/new', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            currentSessionId = data.session_id;
+            // Show greeting from AI in chat
+            chatMessages.innerHTML = '';
+            addMessageToChat('assistant', data.greeting);
+            updateHeaderStatus('Ready to help');
+        })
+        .catch(error => {
+            console.error('Error creating session:', error);
+            updateHeaderStatus('Failed to start session');
+        });
+}
+
+function setupEventListeners() {
+    sendBtn.addEventListener('click', sendMessage);
+    messageInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+
+    generateBtn.addEventListener('click', showEmailModal);
+    newChatBtn.addEventListener('click', startNewChat);
+    closePanel.addEventListener('click', closeItineraryPanel);
+    confirmGenerateBtn.addEventListener('click', confirmGenerate);
+    cancelGenerateBtn.addEventListener('click', cancelGenerate);
+    exportBtn.addEventListener('click', exportItinerary);
+
+    logoutBtn.addEventListener('click', () => {
+        localStorage.removeItem('access_token');
+        window.location.href = '/auth/login';
+    });
+
+    if (videoModeToggle) videoModeToggle.addEventListener('click', toggleVideoMode);
+    if (voiceButton) voiceButton.addEventListener('click', handleVoiceButtonClick);
+    if (exitVideoMode) exitVideoMode.addEventListener('click', disableVideoMode);
+
+    document.getElementById('closeVideoBar').addEventListener('click', () => {
+        document.getElementById('videoBar').style.display = 'none';
+        document.getElementById('finalVideoPlayer').pause();
+        document.getElementById('downloadVideoLink').style.display = 'none';
+        document.querySelector('.container').style.height = '';
+    });
+
+    emailModal.addEventListener('click', (e) => {
+        if (e.target === emailModal) cancelGenerate();
+    });
+
+    messageInput.focus();
+}
+
+// ---------------------------------------------------------------------------
+// HeyGen config check
+// ---------------------------------------------------------------------------
+async function checkHeygenConfig() {
+    try {
+        const response = await authFetch('/api/heygen/config');
+        const data = await response.json();
+        heygenConfigured = data.configured;
+        if (heygenConfigured && videoModeToggle) {
+            videoModeToggle.style.display = 'inline-flex';
+        }
+    } catch (error) {
+        console.log('HeyGen not configured');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Video / Avatar mode
+// ---------------------------------------------------------------------------
+async function toggleVideoMode() {
+    if (videoModeEnabled) disableVideoMode();
+    else await enableVideoMode();
+}
+
+async function enableVideoMode() {
+    if (!currentSessionId) { alert('Please wait for session to initialize'); return; }
+
+    videoModeToggle.disabled = true;
+    videoModeToggle.innerHTML = '<span class="video-icon">...</span> Loading...';
+    updateHeaderStatus('Initializing video mode...');
+
+    try {
+        voiceInputManager = new VoiceInputManager({
+            continuousMode: true,
+            autoRestart: true,
+            onTranscript: handleVoiceTranscript,
+            onInterimTranscript: (text) => { if (interimTranscript) interimTranscript.textContent = text; },
+            onListeningStart: () => { if (voiceButton) voiceButton.classList.add('listening'); if (voiceStatus) voiceStatus.textContent = 'Listening...'; },
+            onListeningEnd: () => { if (voiceButton) voiceButton.classList.remove('listening'); if (interimTranscript) interimTranscript.textContent = ''; },
+            onError: (error) => {
+                console.error('Voice input error:', error);
+                if (error === 'microphone-denied') { alert('Microphone access required for video mode.'); disableVideoMode(); }
+            }
+        });
+
+        const voiceInitialized = await voiceInputManager.initialize();
+        if (!voiceInitialized) throw new Error('Failed to initialize voice input');
+
+        avatarManager = new HeyGenAvatarManager({
+            videoElement: avatarVideo,
+            onReady: () => {
+                console.log('Avatar ready');
+                avatarStatus.textContent = 'Ready';
+                updateHeaderStatus('Video mode active - Manike is ready to help');
+                const greeting = "Hello! I'm Manike, your AI travel planning assistant. I'm so excited to help you plan your perfect trip! What's your name?";
+                addMessageToChat('assistant', greeting);
+                avatarManager.speak(greeting);
+            },
+            onTalkingStart: () => { avatarStatus.textContent = 'Manike is speaking...'; if (voiceStatus) voiceStatus.textContent = 'Avatar speaking...'; if (voiceInputManager) voiceInputManager.pause(); },
+            onTalkingEnd: () => { avatarStatus.textContent = 'Listening to you...'; if (voiceStatus) voiceStatus.textContent = 'Speak now...'; if (voiceInputManager && videoModeEnabled) voiceInputManager.resume(); },
+            onError: (error) => { console.error('Avatar error:', error); alert('Failed to initialize video avatar.'); disableVideoMode(); },
+            onDisconnect: () => { console.log('Avatar disconnected'); disableVideoMode(); }
+        });
+
+        avatarStatus.textContent = 'Connecting to avatar...';
+        const avatarInitialized = await avatarManager.initialize(currentSessionId);
+        if (!avatarInitialized) throw new Error('Failed to initialize avatar');
+
+        videoModeEnabled = true;
+        showVideoModeUI();
+        videoModeToggle.innerHTML = '<span class="video-icon">💬</span> Text Mode';
+        videoModeToggle.disabled = false;
+    } catch (error) {
+        console.error('Failed to enable video mode:', error);
+        alert('Failed to enable video mode: ' + error.message);
+        disableVideoMode();
+    }
+}
+
+function disableVideoMode() {
+    if (avatarManager) { avatarManager.stop(); avatarManager = null; }
+    if (voiceInputManager) { voiceInputManager.destroy(); voiceInputManager = null; }
+    videoModeEnabled = false;
+    hideVideoModeUI();
+    if (videoModeToggle) { videoModeToggle.innerHTML = '<span class="video-icon">🎥</span> Video Mode'; videoModeToggle.disabled = false; }
+    updateHeaderStatus('Ready to help');
+}
+
+function showVideoModeUI() {
+    if (avatarContainer) avatarContainer.style.display = 'block';
+    if (inputContainer) inputContainer.style.display = 'none';
+    if (voiceInputContainer) voiceInputContainer.style.display = 'flex';
+}
+
+function hideVideoModeUI() {
+    if (avatarContainer) avatarContainer.style.display = 'none';
+    if (inputContainer) inputContainer.style.display = 'flex';
+    if (voiceInputContainer) voiceInputContainer.style.display = 'none';
+}
+
+function handleVoiceButtonClick() {
+    if (!voiceInputManager) return;
+    if (avatarManager && avatarManager.isAvatarTalking()) { avatarManager.interrupt(); return; }
+    if (voiceInputManager.isCurrentlyPaused()) {
+        voiceInputManager.resume();
+        if (voiceStatus) voiceStatus.textContent = 'Listening...';
+    } else {
+        voiceInputManager.pause();
+        if (voiceStatus) voiceStatus.textContent = 'Muted - tap to unmute';
+    }
+}
+
+async function handleVoiceTranscript(transcript) {
+    if (!transcript || !transcript.trim() || isProcessingVoice) return;
+    const message = transcript.trim();
+    if (message.length < 2) return;
+
+    isProcessingVoice = true;
+    if (voiceInputManager) voiceInputManager.pause();
+    addMessageToChat('user', message);
+    if (avatarStatus) avatarStatus.textContent = 'Processing...';
+    if (voiceStatus) voiceStatus.textContent = 'Processing your response...';
+
+    try {
+        const response = await authFetch('/api/chat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: currentSessionId, message: message })
+        });
+        const data = await response.json();
+
+        if (data.error) {
+            addMessageToChat('assistant', `Error: ${data.error}`);
+            if (voiceInputManager && videoModeEnabled) voiceInputManager.resume();
+            return;
+        }
+
+        addMessageToChat('assistant', data.response);
+        if (data.is_complete) showGenerateButton();
+
+        if (avatarManager && avatarManager.isAvatarActive()) {
+            await avatarManager.speak(data.response);
+        } else {
+            if (voiceInputManager && videoModeEnabled) voiceInputManager.resume();
+        }
+    } catch (error) {
+        console.error('Voice processing error:', error);
+        addMessageToChat('assistant', 'Sorry, there was an error. Please try again.');
+        if (voiceInputManager && videoModeEnabled) voiceInputManager.resume();
+    } finally {
+        isProcessingVoice = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text chat
+// ---------------------------------------------------------------------------
+function sendMessage() {
+    const message = messageInput.value.trim();
+    if (!message || !currentSessionId) return;
+
+    messageInput.disabled = true;
+    sendBtn.disabled = true;
+    addMessageToChat('user', message);
+    messageInput.value = '';
+
+    authFetch('/api/chat/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: currentSessionId, message: message })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            addMessageToChat('assistant', `Error: ${data.error}`);
+        } else {
+            addMessageToChat('assistant', data.response);
+            if (data.is_complete) {
+                showGenerateButton();
+                updateHeaderStatus('Ready to generate itinerary!');
+            }
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        addMessageToChat('assistant', 'Sorry, there was an error. Please try again.');
+    })
+    .finally(() => {
+        messageInput.disabled = false;
+        sendBtn.disabled = false;
+        messageInput.focus();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Chat UI helpers
+// ---------------------------------------------------------------------------
+function addMessageToChat(role, content) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${role}-message`;
+
+    const avatar = role === 'user' ? '👤' : '🤖';
+    const messageContent = document.createElement('div');
+    messageContent.className = 'message-content';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.innerHTML = parseMessageContent(content);
+    messageContent.appendChild(contentDiv);
+
+    messageDiv.innerHTML = `<div class="message-avatar">${avatar}</div>`;
+    messageDiv.appendChild(messageContent);
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function parseMessageContent(content) {
+    let html = content
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/__(.*?)__/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/_(.+?)_/g, '<em>$1</em>');
+
+    html = html.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+    html = html.replace(/\n/g, '<br>');
+    return html;
+}
+
+function showGenerateButton() {
+    if (actionButtons.style.display === 'none' || !actionButtons.style.display) {
+        actionButtons.style.display = 'flex';
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Itinerary generation
+// ---------------------------------------------------------------------------
+function showEmailModal() {
+    emailModal.style.display = 'flex';
+    modalEmailInput.focus();
+}
+
+function confirmGenerate() {
+    const email = modalEmailInput.value.trim();
+    if (!email) { alert('Please enter your email address'); return; }
+    if (!validateEmail(email)) { alert('Please enter a valid email address'); return; }
+    emailModal.style.display = 'none';
+    generateItinerary(email);
+}
+
+function cancelGenerate() {
+    emailModal.style.display = 'none';
+    modalEmailInput.value = '';
+}
+
+function validateEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function generateItinerary(email) {
+    isGenerating = true;
+    loadingSpinner.style.display = 'flex';
+    generateBtn.disabled = true;
+    messageInput.disabled = true;
+    sendBtn.disabled = true;
+    updateHeaderStatus('Generating your itinerary with AI + Milvus matching...');
+
+    authFetch('/itinerary/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: currentSessionId, email: email })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.detail) {
+            alert(`Error: ${data.detail}`);
+            updateHeaderStatus('Generation failed');
+        } else {
+            currentItinerary = data;
+            const itineraryToShow = data.rich_itinerary || data;
+            displayItinerary(itineraryToShow, data);
+            updateHeaderStatus('Itinerary generated successfully!');
+            exportBtn.style.display = 'block';
+            addMessageToChat('assistant', '✅ Your itinerary has been generated! You can view it in the right panel. Images and cinematic clips have been matched from the media library. Click Export to download as JSON.');
+            if (data.id) compileAndShowVideo(data.id);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Error generating itinerary. Please try again.');
+        updateHeaderStatus('Generation failed');
+    })
+    .finally(() => {
+        isGenerating = false;
+        loadingSpinner.style.display = 'none';
+        generateBtn.disabled = false;
+        messageInput.disabled = false;
+        sendBtn.disabled = false;
+        messageInput.focus();
+    });
+}
+
+function displayItinerary(itinerary, rawData) {
+    itineraryPanel.style.display = 'block';
+    itineraryContent.innerHTML = '';
+
+    // Trip header
+    const headerSection = document.createElement('div');
+    headerSection.className = 'itinerary-section';
+    headerSection.innerHTML = `
+        <h4>Trip Details</h4>
+        <p><strong>Destination:</strong> ${itinerary.destination || rawData.destination || 'N/A'}</p>
+        <p><strong>Duration:</strong> ${itinerary.duration_days || rawData.days || 'N/A'} days</p>
+        <p><strong>Dates:</strong> ${itinerary.start_date || 'N/A'} to ${itinerary.end_date || 'N/A'}</p>
+        ${itinerary.budget ? `<p><strong>Budget:</strong> $${itinerary.budget} ${itinerary.currency || 'USD'}</p>` : ''}
+        ${itinerary.user_email || rawData.user_email ? `<p><strong>Email:</strong> ${itinerary.user_email || rawData.user_email}</p>` : ''}
+        <p><strong>DB ID:</strong> <small>${rawData.id || 'N/A'}</small></p>
+    `;
+    itineraryContent.appendChild(headerSection);
+
+    // Day-by-day schedule
+    const days = itinerary.days || [];
+    if (days.length > 0) {
+        const daysSection = document.createElement('div');
+        daysSection.className = 'itinerary-section';
+        daysSection.innerHTML = '<h4>Daily Schedule</h4>';
+
+        days.forEach(day => {
+            const dayDiv = document.createElement('div');
+            dayDiv.className = 'day-itinerary';
+            let dayHtml = `<h5>Day ${day.day} — ${day.date}</h5>`;
+
+            if (day.activities && day.activities.length > 0) {
+                dayHtml += '<strong>Activities:</strong>';
+                day.activities.forEach(act => {
+                    const mediaLine = act.image_url
+                        ? `<img src="${act.image_url}" alt="${act.title}" style="max-width:100%;border-radius:6px;margin:4px 0;">`
+                        : '';
+                    const clipLine = act.cinematic_clip_url
+                        ? `<div style="font-size:12px;color:#3b82f6;">🎬 Clip: ${act.cinematic_clip_url}</div>`
+                        : '';
+                    dayHtml += `<div class="day-item">
+                        <strong>• ${act.title}</strong><br>
+                        <small>${act.location || ''}</small>
+                        ${mediaLine}${clipLine}
+                    </div>`;
+                });
+            }
+
+            if (day.stays && day.stays.length > 0) {
+                dayHtml += '<strong>Stays:</strong>';
+                day.stays.forEach(stay => {
+                    dayHtml += `<div class="day-item">• ${stay.name} (${stay.location})</div>`;
+                });
+            }
+
+            if (day.rides && day.rides.length > 0) {
+                dayHtml += '<strong>Transportation:</strong>';
+                day.rides.forEach(ride => {
+                    dayHtml += `<div class="day-item">• ${ride.transportation_type}: ${ride.from_location} → ${ride.to_location}</div>`;
+                });
+            }
+
+            dayDiv.innerHTML = dayHtml;
+            daysSection.appendChild(dayDiv);
+        });
+
+        itineraryContent.appendChild(daysSection);
+    }
+
+    // Fallback: show flat activities list if no rich_itinerary days
+    if (days.length === 0 && rawData.activities && rawData.activities.length > 0) {
+        const actSection = document.createElement('div');
+        actSection.className = 'itinerary-section';
+        actSection.innerHTML = '<h4>Activities</h4>';
+        rawData.activities.forEach(act => {
+            const div = document.createElement('div');
+            div.className = 'day-item';
+            div.innerHTML = `<strong>Day ${act.day}: ${act.activity_name}</strong> — ${act.location || ''}
+                ${act.image_url ? `<br><img src="${act.image_url}" style="max-width:100%;border-radius:6px;margin:4px 0;">` : ''}
+                ${act.cinematic_clip_url ? `<br><small style="color:#3b82f6;">🎬 ${act.cinematic_clip_url}</small>` : ''}`;
+            actSection.appendChild(div);
+        });
+        itineraryContent.appendChild(actSection);
+    }
+}
+
+function closeItineraryPanel() {
+    itineraryPanel.style.display = 'none';
+}
+
+function exportItinerary() {
+    if (!currentItinerary) return;
+    const blob = new Blob([JSON.stringify(currentItinerary, null, 2)], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `itinerary_${currentItinerary.id || currentSessionId}.json`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+}
+
+// ---------------------------------------------------------------------------
+// New chat
+// ---------------------------------------------------------------------------
+function startNewChat() {
+    if (videoModeEnabled) disableVideoMode();
+
+    if (currentSessionId) {
+        authFetch(`/api/session/${currentSessionId}`, { method: 'DELETE' }).catch(() => {});
+    }
+
+    chatMessages.innerHTML = '';
+    messageInput.value = '';
+    messageInput.disabled = false;
+    sendBtn.disabled = false;
+    generateBtn.disabled = false;
+    actionButtons.style.display = 'none';
+    itineraryPanel.style.display = 'none';
+    exportBtn.style.display = 'none';
+    currentItinerary = null;
+    document.getElementById('videoBar').style.display = 'none';
+    document.getElementById('finalVideoPlayer').src = '';
+    document.getElementById('downloadVideoLink').style.display = 'none';
+    document.querySelector('.container').style.height = '';
+    updateHeaderStatus('Starting new session...');
+    messageInput.focus();
+
+    initializeSession();
+}
+
+function updateHeaderStatus(status) {
+    if (headerStatus) headerStatus.textContent = status;
+}
+
+// ---------------------------------------------------------------------------
+// Cinematic video compilation
+// ---------------------------------------------------------------------------
+async function compileAndShowVideo(itineraryId) {
+    addMessageToChat('assistant', '🎬 Compiling your cinematic trip video...');
+    try {
+        const res = await authFetch(`/itinerary/${itineraryId}/compile-video`, { method: 'POST' });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            if (res.status === 400) {
+                addMessageToChat('assistant', 'ℹ️ No cinematic clips were matched for this itinerary — video unavailable.');
+            } else {
+                addMessageToChat('assistant', `⚠️ Could not compile video: ${err.detail || 'Unknown error'}. You can still view your itinerary above.`);
+            }
+            return;
+        }
+
+        const data = await res.json();
+        const videoUrl = data.final_video && data.final_video.video_url;
+        if (videoUrl) {
+            showVideoPlayer(videoUrl);
+            addMessageToChat('assistant', '✅ Your cinematic video is ready! See the player at the bottom.');
+        } else {
+            addMessageToChat('assistant', 'ℹ️ No cinematic clips were matched for this itinerary — video unavailable.');
+        }
+    } catch (e) {
+        console.error('Video compile error:', e);
+        addMessageToChat('assistant', '⚠️ Could not compile video. You can still view your itinerary above.');
+    }
+}
+
+function showVideoPlayer(url) {
+    const videoBar = document.getElementById('videoBar');
+    const player = document.getElementById('finalVideoPlayer');
+    const downloadLink = document.getElementById('downloadVideoLink');
+    player.src = url;
+    downloadLink.href = url;
+    downloadLink.style.display = 'inline-flex';
+    videoBar.style.display = 'block';
+    // Shrink the container so the chat input stays above the fixed bar
+    const barHeight = videoBar.offsetHeight;
+    document.querySelector('.container').style.height = `calc(100vh - ${barHeight}px)`;
+}

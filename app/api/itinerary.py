@@ -1,3 +1,5 @@
+import json
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import get_current_tenant_id, get_current_user
 from app.core.database import get_session
@@ -8,6 +10,9 @@ from app.services.generators import ItineraryGenerator
 from app.services.matcher import match_image, match_clip
 from app.services.media_processor import MediaProcessor
 from app.services.storage import storage_service
+from app.services.ai_itinerary_generator import AIItineraryGenerator
+from app.chat.session import chat_session_store
+from app.providers.factory import ProviderFactory
 import subprocess
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -16,14 +21,20 @@ from typing import List, Optional
 
 router = APIRouter(prefix="/itinerary", tags=["Itinerary Service"])
 
-itinerary_gen = ItineraryGenerator()
+# Legacy mock generator (kept for backward compat)
+_legacy_gen = ItineraryGenerator()
 media_processor = MediaProcessor()
 
 
 class ItineraryRequest(BaseModel):
-    prompt: str             # e.g. "3-day trip to Galle and Ella"
-    destination: str        # e.g. "Sri Lanka"
-    days: int               # e.g. 3
+    # --- AI-powered chat-based flow (recommended) ---
+    session_id: Optional[str] = None   # Session from POST /api/session/new
+    email: Optional[str] = None         # Override email (used by frontend modal)
+
+    # --- Legacy fallback (if session_id not provided) ---
+    prompt: Optional[str] = None        # e.g. "3-day trip to Galle and Ella"
+    destination: Optional[str] = None   # e.g. "Sri Lanka"
+    days: Optional[int] = None          # e.g. 3
 
 
 class ActivityResponse(BaseModel):
@@ -46,7 +57,9 @@ class ItineraryResponse(BaseModel):
     destination: str
     days: int
     status: str
+    user_email: Optional[str] = None
     activities: List[ActivityResponse]
+    rich_itinerary: Optional[dict] = None  # Full AI-generated itinerary with media URLs
     final_video_url: Optional[str] = None
     created_at: str
 
@@ -61,38 +74,123 @@ async def generate_itinerary(
     session: Session = Depends(get_session)
 ):
     """
-    Full flow:
-    1. Generate activities from the prompt
-    2. Match each activity to an image from the tenant's library
-    3. Tag each activity to a pre-uploaded cinematic clip
-    4. Save everything to PostgreSQL
-    """
-    # Step 1: Generate activities
-    raw_activities = itinerary_gen.generate(req.prompt, req.destination, req.days)
+    Generate a travel itinerary with Milvus-matched images and cinematic clips.
 
-    # Step 2: Save the itinerary
+    AI-powered flow (recommended):
+      Provide a `session_id` from POST /api/session/new.
+      The conversation is used to generate a rich AI itinerary, then
+      Milvus semantic search selects the best matching images/clips for
+      each activity. Everything is saved to PostgreSQL.
+
+    Legacy flow (fallback):
+      Provide `prompt`, `destination`, and `days` directly.
+      Uses a rule-based activity generator with Milvus matching.
+    """
+
+    if req.session_id:
+        # ----------------------------------------------------------------
+        # AI-POWERED CHAT-BASED FLOW
+        # ----------------------------------------------------------------
+        manager = chat_session_store.get_manager(req.session_id)
+        if not manager:
+            raise HTTPException(
+                status_code=404,
+                detail="Chat session not found. Create one via POST /api/session/new"
+            )
+
+        requirements = manager.extract_requirements()
+        conversation_summary = manager.get_conversation_summary()
+
+        # Use email from modal if provided, else fall back to conversation-extracted email
+        user_email = req.email or requirements.get("email") or "unknown@example.com"
+        destination = requirements.get("destination") or "Sri Lanka"
+
+        # Calculate duration from dates
+        start_date_str = requirements.get("start_date")
+        end_date_str = requirements.get("end_date")
+        days = 3  # default
+        if start_date_str and end_date_str:
+            try:
+                start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+                days = max(1, (end_dt - start_dt).days + 1)
+            except ValueError:
+                pass
+
+        # Build summary prompt for storage
+        prompt_text = conversation_summary[:1000] if len(conversation_summary) > 1000 else conversation_summary
+
+        # Generate rich AI itinerary
+        try:
+            provider = ProviderFactory.create()
+        except ValueError as e:
+            raise HTTPException(status_code=500, detail=f"AI provider not configured: {str(e)}")
+
+        ai_gen = AIItineraryGenerator(provider)
+        rich_itinerary = ai_gen.generate_itinerary(conversation_summary, user_email)
+
+        if not rich_itinerary:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate itinerary from AI. Check AI provider configuration."
+            )
+
+        # Extract flat list of activities for Milvus matching
+        raw_activities = ai_gen.extract_activities_for_matching(rich_itinerary)
+
+    else:
+        # ----------------------------------------------------------------
+        # LEGACY RULE-BASED FLOW
+        # ----------------------------------------------------------------
+        if not req.prompt or not req.destination or req.days is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either 'session_id' (AI flow) or all of 'prompt', 'destination', 'days' (legacy flow)"
+            )
+
+        prompt_text = req.prompt
+        destination = req.destination
+        days = req.days
+        user_email = None
+        rich_itinerary = None
+
+        raw_activities = _legacy_gen.generate(req.prompt, req.destination, req.days)
+
+    # ------------------------------------------------------------------
+    # Save Itinerary record to PostgreSQL
+    # ------------------------------------------------------------------
     itinerary = Itinerary(
         tenant_id=tenant_id,
-        prompt=req.prompt,
-        destination=req.destination,
-        days=req.days,
+        prompt=prompt_text,
+        destination=destination,
+        days=days,
         status="generated",
+        user_email=user_email,
+        rich_itinerary_json=json.dumps(rich_itinerary) if rich_itinerary else None,
     )
     session.add(itinerary)
     session.commit()
     session.refresh(itinerary)
 
-    # Step 3: Match each activity using Milvus semantic search
-    activities = []
-    used_image_ids = set()
-    for idx, raw in enumerate(raw_activities):
-        # Construct query text for semantic search
-        query_text = f"{raw['activity_name']} {raw['keywords']}"
+    # ------------------------------------------------------------------
+    # Milvus semantic search: match each activity → image + clip
+    # ------------------------------------------------------------------
+    db_activities = []
+    used_image_ids: set = set()
 
-        # Match image (semantic search)
+    for idx, raw in enumerate(raw_activities):
+        # Build a rich query string for semantic search
+        query_parts = [
+            raw.get("activity_name", ""),
+            raw.get("location", ""),
+            raw.get("keywords", ""),
+            raw.get("description", "")[:80],
+        ]
+        query_text = " ".join(p for p in query_parts if p)
+
         matched_image = match_image(tenant_id, query_text, exclude_ids=used_image_ids)
-        # Match cinematic clip (semantic search)
         matched_clip = match_clip(tenant_id, query_text)
+
         if matched_image:
             used_image_ids.add(matched_image.id)
 
@@ -102,7 +200,7 @@ async def generate_itinerary(
             day=raw["day"],
             activity_name=raw["activity_name"],
             location=raw.get("location"),
-            keywords=raw["keywords"],
+            keywords=raw.get("keywords", ""),
             image_id=matched_image.id if matched_image else None,
             image_url=matched_image.url if matched_image else None,
             cinematic_clip_id=matched_clip.id if matched_clip else None,
@@ -110,15 +208,38 @@ async def generate_itinerary(
             order_index=idx,
         )
         session.add(activity)
-        activities.append(activity)
+        db_activities.append((raw, activity))
 
     session.commit()
 
-    # Refresh to get IDs
-    for act in activities:
+    # Refresh to get DB-assigned IDs
+    for _, act in db_activities:
         session.refresh(act)
 
-    return _build_response(itinerary, activities, session)
+    # ------------------------------------------------------------------
+    # Enrich the rich_itinerary JSON with matched media URLs
+    # ------------------------------------------------------------------
+    if rich_itinerary:
+        act_iter = iter(db_activities)
+        for day_data in rich_itinerary.get("days", []):
+            for act_data in day_data.get("activities", []):
+                try:
+                    _raw, db_act = next(act_iter)
+                    act_data["image_url"] = db_act.image_url
+                    act_data["cinematic_clip_url"] = db_act.cinematic_clip_url
+                    act_data["image_id"] = db_act.image_id
+                    act_data["cinematic_clip_id"] = db_act.cinematic_clip_id
+                    act_data["db_activity_id"] = db_act.id
+                except StopIteration:
+                    break
+
+        # Persist the enriched JSON back to DB
+        itinerary.rich_itinerary_json = json.dumps(rich_itinerary)
+        session.add(itinerary)
+        session.commit()
+
+    activities_list = [act for _, act in db_activities]
+    return _build_response(itinerary, activities_list, session, rich_itinerary)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +263,8 @@ async def list_itineraries(
             .where(ItineraryActivity.tenant_id == tenant_id)
             .order_by(ItineraryActivity.order_index)
         ).all()
-        results.append(_build_response(itin, activities, session))
+        rich = json.loads(itin.rich_itinerary_json) if itin.rich_itinerary_json else None
+        results.append(_build_response(itin, activities, session, rich))
     return results
 
 
@@ -167,7 +289,8 @@ async def get_itinerary(
         .order_by(ItineraryActivity.order_index)
     ).all()
 
-    return _build_response(itinerary, activities, session)
+    rich = json.loads(itinerary.rich_itinerary_json) if itinerary.rich_itinerary_json else None
+    return _build_response(itinerary, activities, session, rich)
 
 
 # ---------------------------------------------------------------------------
@@ -190,8 +313,7 @@ async def compile_video(
     if not itinerary or itinerary.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Itinerary not found")
 
-    # Idempotent behavior: if a final video already exists for this itinerary,
-    # return it instead of compiling and inserting a duplicate row.
+    # Idempotent: return existing final video if already compiled
     existing_final = session.exec(
         select(FinalVideo)
         .where(FinalVideo.itinerary_id == itinerary.id)
@@ -218,10 +340,7 @@ async def compile_video(
     ).all()
 
     # Collect clip URLs (skip activities with no clip)
-    clip_urls = []
-    for act in activities:
-        if act.cinematic_clip_url:
-            clip_urls.append(act.cinematic_clip_url)
+    clip_urls = [act.cinematic_clip_url for act in activities if act.cinematic_clip_url]
 
     if not clip_urls:
         raise HTTPException(
@@ -252,14 +371,13 @@ async def compile_video(
     )
     session.add(final_video)
 
-    # Update itinerary status
     itinerary.status = "video_compiled"
     session.add(itinerary)
+
     try:
         session.commit()
         session.refresh(final_video)
     except IntegrityError:
-        # A concurrent request may have inserted the final video first.
         session.rollback()
         existing_final = session.exec(
             select(FinalVideo)
@@ -324,9 +442,7 @@ async def delete_itinerary(
     for activity in activities:
         session.delete(activity)
 
-    # Ensure child rows are deleted before deleting the parent itinerary.
     session.flush()
-
     session.delete(itinerary)
     session.commit()
 
@@ -341,9 +457,13 @@ async def delete_itinerary(
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
-def _build_response(itinerary: Itinerary, activities: list, session: Session) -> ItineraryResponse:
+def _build_response(
+    itinerary: Itinerary,
+    activities: list,
+    session: Session,
+    rich_itinerary: Optional[dict] = None,
+) -> ItineraryResponse:
     """Build a full ItineraryResponse from models."""
-    # Check for final video
     final_vid = session.exec(
         select(FinalVideo).where(FinalVideo.itinerary_id == itinerary.id)
     ).first()
@@ -355,6 +475,8 @@ def _build_response(itinerary: Itinerary, activities: list, session: Session) ->
         destination=itinerary.destination,
         days=itinerary.days,
         status=itinerary.status,
+        user_email=itinerary.user_email,
+        rich_itinerary=rich_itinerary,
         final_video_url=final_vid.video_url if final_vid else None,
         activities=[
             ActivityResponse(

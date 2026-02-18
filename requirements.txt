@@ -1,5 +1,7 @@
 fastapi
 uvicorn
+jinja2
+aiofiles
 sqlmodel
 python-jose[cryptography]
 passlib[recommended]
@@ -11,3 +13,6 @@ psycopg2-binary
 python-dotenv
 boto3
 certifi
+# AI Providers
+google-genai
+anthropic
