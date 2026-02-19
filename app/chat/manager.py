@@ -8,6 +8,8 @@ from .response_generator import ResponseGenerator
 class ChatManager:
     """Orchestrates conversational flow for step-by-step travel planning."""
 
+    MAX_CONSECUTIVE_FAILURES = 2
+
     def __init__(self, provider: AIProvider):
         self.provider = provider
         self.flow = ConversationFlow()
@@ -15,6 +17,8 @@ class ChatManager:
         self.responder = ResponseGenerator(provider)
         self.chat_history = []
         self.user_name = None
+        self._consecutive_failures = 0
+        self._changed_since_generation = False
 
     @property
     def user_requirements(self):
@@ -38,12 +42,21 @@ class ChatManager:
                     self.flow.update_field("name", name_extracted)
 
             # Extract all fields from the message
-            extracted_data = self.extractor.extract_all_fields(
+            extracted_data, had_api_error = self.extractor.extract_all_fields(
                 user_message, self.flow.user_requirements
             )
 
             print(f"DEBUG - Extracted data: {extracted_data}")
             print(f"DEBUG - Current user_requirements: {self.flow.user_requirements}")
+
+            # Track consecutive API failures
+            if had_api_error:
+                self._consecutive_failures += 1
+                print(f"DEBUG - Consecutive API failures: {self._consecutive_failures}")
+                if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                    return self._get_service_unavailable_message()
+            else:
+                self._consecutive_failures = 0
 
             # Track trip duration
             trip_duration = self.extractor.extract_trip_duration(user_message)
@@ -57,6 +70,7 @@ class ChatManager:
                     current = self.flow.user_requirements.get(field)
                     if current is None or str(value) != str(current):
                         self.flow.update_field(field, value)
+                        self._changed_since_generation = True
                         print(f"DEBUG - Updated {field}: {current!r} → {value!r}")
 
             # Handle skip requests on optional fields
@@ -87,13 +101,30 @@ class ChatManager:
             return assistant_message
 
         except AIProviderError as e:
-            error_msg = "I'm so sorry, but I ran into a technical issue! Let me try that again. Could you please repeat what you just said? 🙏"
+            self._consecutive_failures += 1
             print(f"Error: {str(e)}")
+            if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                return self._get_service_unavailable_message()
+            error_msg = "I'm so sorry, but I ran into a technical issue! Let me try that again. Could you please repeat what you just said? 🙏"
             return error_msg
         except Exception as e:
-            error_msg = "Oops! Something went wrong on my end. Let's try that again! 😊"
+            self._consecutive_failures += 1
             print(f"Error: {str(e)}")
+            if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                return self._get_service_unavailable_message()
+            error_msg = "Oops! Something went wrong on my end. Let's try that again! 😊"
             return error_msg
+
+    @staticmethod
+    def _get_service_unavailable_message() -> str:
+        return (
+            "I'm really sorry, but it looks like I'm experiencing a service disruption "
+            "and I'm unable to process your request right now. 😔\n\n"
+            "Here's what you can do:\n"
+            "• **Try again in a few minutes** — this might be a temporary issue.\n"
+            "• **Contact our support team** at support@manike.ai or reach out to your system administrator for assistance.\n\n"
+            "I apologize for the inconvenience! We'll get this sorted out as soon as possible. 🙏"
+        )
 
     def extract_requirements(self) -> dict:
         return self.flow.user_requirements
@@ -106,3 +137,14 @@ class ChatManager:
 
     def is_requirements_complete(self) -> bool:
         return self.flow.is_complete()
+
+    def is_ready_to_generate(self) -> bool:
+        """True when all required fields are filled AND no more questions to ask."""
+        return self.flow.is_complete() and self.flow.get_next_question() is None
+
+    def has_changes_since_generation(self) -> bool:
+        return self._changed_since_generation
+
+    def mark_generated(self) -> None:
+        """Reset changes flag after a successful generation."""
+        self._changed_since_generation = False

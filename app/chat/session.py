@@ -1,5 +1,6 @@
 import uuid
 from typing import Dict, Optional
+from datetime import datetime
 from app.chat.manager import ChatManager
 from app.providers.base import AIProvider
 
@@ -17,6 +18,14 @@ class ChatSessionStore:
         greeting = manager.get_greeting()
         self._sessions[session_id] = {
             "manager": manager,
+            "created_at": datetime.now().isoformat(),
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": greeting,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            ],
         }
         return session_id, greeting
 

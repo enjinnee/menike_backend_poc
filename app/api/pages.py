@@ -17,9 +17,3 @@ async def index(request: Request):
 async def login_page(request: Request):
     """Serve the login page."""
     return templates.TemplateResponse("login.html", {"request": request})
-
-
-@router.get("/api/heygen/config")
-async def heygen_config():
-    """HeyGen integration status — not yet configured."""
-    return {"configured": False}
