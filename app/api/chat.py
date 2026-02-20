@@ -12,6 +12,11 @@ class SendMessageRequest(BaseModel):
     message: str
 
 
+class VoiceMessageRequest(BaseModel):
+    session_id: str
+    transcript: str
+
+
 @router.post("/session/new")
 async def new_session(
     tenant_id: str = Depends(get_current_tenant_id),
@@ -52,6 +57,8 @@ async def send_message(
         "response": response,
         "requirements": manager.extract_requirements(),
         "is_complete": manager.is_requirements_complete(),
+        "requirements_complete": manager.is_requirements_complete(),
+        "has_changes": manager.has_changes_since_generation(),
         "messages": manager.chat_history,
     }
 
@@ -72,6 +79,33 @@ async def get_history(
         "messages": manager.chat_history,
         "requirements": manager.extract_requirements(),
         "is_complete": manager.is_requirements_complete(),
+    }
+
+
+@router.post("/chat/voice")
+async def process_voice_message(
+    req: VoiceMessageRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+):
+    """
+    Process voice input transcription and return text response.
+    Accepts a session_id and transcript, sends through the chat manager.
+    """
+    manager = chat_session_store.get_manager(req.session_id)
+    if not manager:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    transcript = req.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Empty transcript")
+
+    response = manager.send_message(transcript)
+
+    return {
+        "response": response,
+        "requirements": manager.extract_requirements(),
+        "requirements_complete": manager.is_requirements_complete(),
+        "has_changes": manager.has_changes_since_generation(),
     }
 
 

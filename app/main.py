@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import auth, scenes, itinerary, experiences, tenants, images, cinematic_clips, admin
 from app.api import chat as chat_api
 from app.api import pages as pages_api
+from app.api import heygen as heygen_api
 from app.core.database import create_db_and_tables
 from app.models.milvus_schema import (
     get_experience_schema, get_tenant_schema, 
@@ -58,6 +59,7 @@ app.include_router(cinematic_clips.router)
 app.include_router(experiences.router)
 app.include_router(tenants.router)
 app.include_router(admin.router)
+app.include_router(heygen_api.router)
 
 
 @app.get("/docs-api", include_in_schema=False)

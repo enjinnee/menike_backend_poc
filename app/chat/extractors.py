@@ -41,8 +41,14 @@ Return ONLY the JSON object, no other text."""
             print(f"Error extracting name: {str(e)}")
             return None
 
-    def extract_all_fields(self, message: str, current_requirements: dict) -> dict:
-        """Extract ALL travel information from a user message using AI."""
+    def extract_all_fields(self, message: str, current_requirements: dict) -> tuple[dict, bool]:
+        """Extract ALL travel information from a user message using AI.
+
+        Returns:
+            A tuple of (extracted_data, had_api_error). had_api_error is True
+            when the AI provider call failed, signaling the caller to track
+            consecutive failures rather than silently re-asking the same question.
+        """
         fields_description = "\n".join([
             f"- {step['field']}: {step['question']}"
             for step in CONVERSATION_STEPS
@@ -145,7 +151,7 @@ Return ONLY valid JSON, no markdown, no explanation."""
 
             if not response_text or response_text.strip() == "":
                 print("DEBUG - Empty response from AI provider")
-                return {key: None for key in current_requirements.keys()}
+                return dict(current_requirements), True
 
             cleaned_response = response_text.strip()
             if cleaned_response.startswith("```"):
@@ -172,11 +178,14 @@ Return ONLY valid JSON, no markdown, no explanation."""
                     except Exception as e:
                         print(f"DEBUG - Error calculating end_date: {e}")
 
-            return extracted
-        except (json.JSONDecodeError, AIProviderError) as e:
+            return extracted, False
+        except AIProviderError as e:
+            print(f"API error extracting information: {str(e)}")
+            return dict(current_requirements), True
+        except (json.JSONDecodeError, Exception) as e:
             print(f"Error extracting information: {str(e)}")
             print(f"DEBUG - Response text that failed to parse: {repr(response_text) if 'response_text' in locals() else 'N/A'}")
-            return {key: None for key in current_requirements.keys()}
+            return dict(current_requirements), False
 
     def extract_trip_duration(self, message: str) -> Optional[int]:
         """Extract trip duration in days from user message using regex."""
