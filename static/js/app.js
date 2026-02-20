@@ -26,6 +26,8 @@ function authFetch(url, options = {}) {
 // ---------------------------------------------------------------------------
 let currentSessionId = null;
 let isGenerating = false;
+let hasGeneratedItinerary = false;
+let pendingRegenerate = false;
 let videoModeEnabled = false;
 let avatarManager = null;
 let voiceInputManager = null;
@@ -54,6 +56,14 @@ const loadingSpinner = document.getElementById('loadingSpinner');
 const headerStatus = document.getElementById('headerStatus');
 const inputContainer = document.getElementById('inputContainer');
 const logoutBtn = document.getElementById('logoutBtn');
+const itineraryUpdatingOverlay = document.getElementById('itineraryUpdatingOverlay');
+
+// Mobile elements
+const sidebarToggle = document.getElementById('sidebarToggle');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
+const sidebar = document.querySelector('.sidebar');
+const viewItineraryBtn = document.getElementById('viewItineraryBtn');
+const backToChat = document.getElementById('backToChat');
 
 // Video mode elements
 const videoModeToggle = document.getElementById('videoModeToggle');
@@ -104,6 +114,9 @@ function setupEventListeners() {
             sendMessage();
         }
     });
+    messageInput.addEventListener('input', () => {
+        sendBtn.disabled = !messageInput.value.trim();
+    });
 
     generateBtn.addEventListener('click', showEmailModal);
     newChatBtn.addEventListener('click', startNewChat);
@@ -132,6 +145,38 @@ function setupEventListeners() {
         if (e.target === emailModal) cancelGenerate();
     });
 
+    // Mobile sidebar toggle
+    if (sidebarToggle) {
+        sidebarToggle.addEventListener('click', toggleSidebar);
+    }
+    if (sidebarOverlay) {
+        sidebarOverlay.addEventListener('click', closeSidebar);
+    }
+
+    // Mobile itinerary view button
+    if (viewItineraryBtn) {
+        viewItineraryBtn.addEventListener('click', openItineraryMobile);
+    }
+    if (backToChat) {
+        backToChat.addEventListener('click', closeItineraryPanel);
+    }
+
+    // Handle resize: clean up mobile states when switching to desktop
+    window.addEventListener('resize', () => {
+        if (!isMobile()) {
+            closeSidebar();
+            itineraryPanel.classList.remove('mobile-open');
+            if (viewItineraryBtn) {
+                viewItineraryBtn.classList.remove('visible');
+                viewItineraryBtn.style.display = 'none';
+            }
+        } else if (hasGeneratedItinerary && viewItineraryBtn) {
+            viewItineraryBtn.style.display = '';
+            viewItineraryBtn.classList.add('visible');
+        }
+    });
+
+    sendBtn.disabled = true;
     messageInput.focus();
 }
 
@@ -259,10 +304,10 @@ async function handleVoiceTranscript(transcript) {
     if (voiceStatus) voiceStatus.textContent = 'Processing your response...';
 
     try {
-        const response = await authFetch('/api/chat/send', {
+        const response = await authFetch('/api/chat/voice', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: currentSessionId, message: message })
+            body: JSON.stringify({ session_id: currentSessionId, transcript: message })
         });
         const data = await response.json();
 
@@ -280,6 +325,9 @@ async function handleVoiceTranscript(transcript) {
         } else {
             if (voiceInputManager && videoModeEnabled) voiceInputManager.resume();
         }
+
+        // Handle auto-generation
+        handleAutoGenerate(data);
     } catch (error) {
         console.error('Voice processing error:', error);
         addMessageToChat('assistant', 'Sorry, there was an error. Please try again.');
@@ -316,6 +364,8 @@ function sendMessage() {
                 showGenerateButton();
                 updateHeaderStatus('Ready to generate itinerary!');
             }
+            // Handle auto-generation for both first-time and updates
+            handleAutoGenerate(data);
         }
     })
     .catch(error => {
@@ -327,6 +377,35 @@ function sendMessage() {
         sendBtn.disabled = false;
         messageInput.focus();
     });
+}
+
+// ---------------------------------------------------------------------------
+// Auto-generation logic
+// ---------------------------------------------------------------------------
+function handleAutoGenerate(data) {
+    if (data.requirements_complete && !hasGeneratedItinerary && !isGenerating) {
+        // First-time auto-generation
+        autoGenerateItinerary();
+    } else if (hasGeneratedItinerary && data.has_changes) {
+        // User modified requirements after generation — auto-regenerate
+        if (isGenerating) {
+            pendingRegenerate = true;
+        } else {
+            autoRegenerateItinerary();
+        }
+    }
+}
+
+function autoGenerateItinerary() {
+    generateItinerary();
+}
+
+function autoRegenerateItinerary() {
+    if (itineraryUpdatingOverlay) {
+        itineraryUpdatingOverlay.style.display = 'flex';
+    }
+    updateHeaderStatus('Updating your itinerary...');
+    generateItinerary();
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +448,7 @@ function showGenerateButton() {
 }
 
 // ---------------------------------------------------------------------------
-// Itinerary generation
+// Itinerary generation (B2B: email modal flow)
 // ---------------------------------------------------------------------------
 function showEmailModal() {
     emailModal.style.display = 'flex';
@@ -394,17 +473,27 @@ function validateEmail(email) {
 }
 
 function generateItinerary(email) {
+    const isRegeneration = hasGeneratedItinerary;
     isGenerating = true;
-    loadingSpinner.style.display = 'flex';
-    generateBtn.disabled = true;
-    messageInput.disabled = true;
-    sendBtn.disabled = true;
-    updateHeaderStatus('Generating your itinerary with AI + Milvus matching...');
+
+    if (!isRegeneration) {
+        loadingSpinner.style.display = 'flex';
+        generateBtn.disabled = true;
+        messageInput.disabled = true;
+        sendBtn.disabled = true;
+    }
+
+    updateHeaderStatus(isRegeneration
+        ? 'Updating your itinerary...'
+        : 'Generating your itinerary with AI + Milvus matching...');
+
+    const body = { session_id: currentSessionId };
+    if (email) body.email = email;
 
     authFetch('/itinerary/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: currentSessionId, email: email })
+        body: JSON.stringify(body)
     })
     .then(response => response.json())
     .then(data => {
@@ -417,7 +506,20 @@ function generateItinerary(email) {
             displayItinerary(itineraryToShow, data);
             updateHeaderStatus('Itinerary generated successfully!');
             exportBtn.style.display = 'block';
-            addMessageToChat('assistant', '✅ Your itinerary has been generated! You can view it in the right panel. Images and cinematic clips have been matched from the media library. Click Export to download as JSON.');
+
+            if (!hasGeneratedItinerary) {
+                hasGeneratedItinerary = true;
+                const panelHint = isMobile()
+                    ? 'tap the "View Itinerary" button to see it'
+                    : 'view it in the right panel';
+                addMessageToChat('assistant', `✅ Your itinerary has been generated! You can ${panelHint}. Images and cinematic clips have been matched from the media library. Click Export to download as JSON.`);
+            } else {
+                const updateHint = isMobile()
+                    ? 'tap "View Itinerary" to see the latest version'
+                    : 'check the right panel for the latest version';
+                addMessageToChat('assistant', `✅ Your itinerary has been updated — ${updateHint}.`);
+            }
+
             if (data.id) compileAndShowVideo(data.id);
         }
     })
@@ -429,10 +531,19 @@ function generateItinerary(email) {
     .finally(() => {
         isGenerating = false;
         loadingSpinner.style.display = 'none';
+        if (itineraryUpdatingOverlay) {
+            itineraryUpdatingOverlay.style.display = 'none';
+        }
         generateBtn.disabled = false;
         messageInput.disabled = false;
         sendBtn.disabled = false;
         messageInput.focus();
+
+        // If another change came in while we were generating, regenerate again
+        if (pendingRegenerate) {
+            pendingRegenerate = false;
+            autoRegenerateItinerary();
+        }
     });
 }
 
@@ -519,10 +630,20 @@ function displayItinerary(itinerary, rawData) {
         });
         itineraryContent.appendChild(actSection);
     }
+
+    // On mobile, show the floating button
+    if (isMobile() && viewItineraryBtn) {
+        viewItineraryBtn.style.display = '';
+        viewItineraryBtn.classList.add('visible');
+    }
 }
 
 function closeItineraryPanel() {
-    itineraryPanel.style.display = 'none';
+    if (isMobile()) {
+        itineraryPanel.classList.remove('mobile-open');
+    } else {
+        itineraryPanel.style.display = 'none';
+    }
 }
 
 function exportItinerary() {
@@ -551,12 +672,19 @@ function startNewChat() {
     chatMessages.innerHTML = '';
     messageInput.value = '';
     messageInput.disabled = false;
-    sendBtn.disabled = false;
+    sendBtn.disabled = true;
     generateBtn.disabled = false;
     actionButtons.style.display = 'none';
     itineraryPanel.style.display = 'none';
+    itineraryPanel.classList.remove('mobile-open');
+    if (viewItineraryBtn) {
+        viewItineraryBtn.classList.remove('visible');
+        viewItineraryBtn.style.display = 'none';
+    }
     exportBtn.style.display = 'none';
     currentItinerary = null;
+    hasGeneratedItinerary = false;
+    pendingRegenerate = false;
     document.getElementById('videoBar').style.display = 'none';
     document.getElementById('finalVideoPlayer').src = '';
     document.getElementById('downloadVideoLink').style.display = 'none';
@@ -569,6 +697,30 @@ function startNewChat() {
 
 function updateHeaderStatus(status) {
     if (headerStatus) headerStatus.textContent = status;
+}
+
+// ---------------------------------------------------------------------------
+// Mobile helpers
+// ---------------------------------------------------------------------------
+function isMobile() {
+    return window.innerWidth <= 768;
+}
+
+function toggleSidebar() {
+    sidebar.classList.toggle('open');
+    sidebarOverlay.classList.toggle('active');
+}
+
+function closeSidebar() {
+    sidebar.classList.remove('open');
+    sidebarOverlay.classList.remove('active');
+}
+
+function openItineraryMobile() {
+    itineraryPanel.style.display = 'block';
+    requestAnimationFrame(() => {
+        itineraryPanel.classList.add('mobile-open');
+    });
 }
 
 // ---------------------------------------------------------------------------
