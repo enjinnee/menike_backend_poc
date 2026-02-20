@@ -41,16 +41,10 @@ let currentItinerary = null;
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const chatMessages = document.getElementById('chatMessages');
-const generateBtn = document.getElementById('generateBtn');
-const actionButtons = document.getElementById('actionButtons');
 const newChatBtn = document.getElementById('newChatBtn');
 const itineraryPanel = document.getElementById('itineraryPanel');
 const itineraryContent = document.getElementById('itineraryContent');
 const closePanel = document.getElementById('closePanel');
-const emailModal = document.getElementById('emailModal');
-const modalEmailInput = document.getElementById('modalEmailInput');
-const confirmGenerateBtn = document.getElementById('confirmGenerateBtn');
-const cancelGenerateBtn = document.getElementById('cancelGenerateBtn');
 const exportBtn = document.getElementById('exportBtn');
 const loadingSpinner = document.getElementById('loadingSpinner');
 const headerStatus = document.getElementById('headerStatus');
@@ -118,11 +112,8 @@ function setupEventListeners() {
         sendBtn.disabled = !messageInput.value.trim();
     });
 
-    generateBtn.addEventListener('click', showEmailModal);
     newChatBtn.addEventListener('click', startNewChat);
     closePanel.addEventListener('click', closeItineraryPanel);
-    confirmGenerateBtn.addEventListener('click', confirmGenerate);
-    cancelGenerateBtn.addEventListener('click', cancelGenerate);
     exportBtn.addEventListener('click', exportItinerary);
 
     logoutBtn.addEventListener('click', () => {
@@ -139,10 +130,6 @@ function setupEventListeners() {
         document.getElementById('finalVideoPlayer').pause();
         document.getElementById('downloadVideoLink').style.display = 'none';
         document.querySelector('.container').style.height = '';
-    });
-
-    emailModal.addEventListener('click', (e) => {
-        if (e.target === emailModal) cancelGenerate();
     });
 
     // Mobile sidebar toggle
@@ -318,7 +305,6 @@ async function handleVoiceTranscript(transcript) {
         }
 
         addMessageToChat('assistant', data.response);
-        if (data.is_complete) showGenerateButton();
 
         if (avatarManager && avatarManager.isAvatarActive()) {
             await avatarManager.speak(data.response);
@@ -360,10 +346,6 @@ function sendMessage() {
             addMessageToChat('assistant', `Error: ${data.error}`);
         } else {
             addMessageToChat('assistant', data.response);
-            if (data.is_complete) {
-                showGenerateButton();
-                updateHeaderStatus('Ready to generate itinerary!');
-            }
             // Handle auto-generation for both first-time and updates
             handleAutoGenerate(data);
         }
@@ -441,44 +423,12 @@ function parseMessageContent(content) {
     return html;
 }
 
-function showGenerateButton() {
-    if (actionButtons.style.display === 'none' || !actionButtons.style.display) {
-        actionButtons.style.display = 'flex';
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Itinerary generation (B2B: email modal flow)
-// ---------------------------------------------------------------------------
-function showEmailModal() {
-    emailModal.style.display = 'flex';
-    modalEmailInput.focus();
-}
-
-function confirmGenerate() {
-    const email = modalEmailInput.value.trim();
-    if (!email) { alert('Please enter your email address'); return; }
-    if (!validateEmail(email)) { alert('Please enter a valid email address'); return; }
-    emailModal.style.display = 'none';
-    generateItinerary(email);
-}
-
-function cancelGenerate() {
-    emailModal.style.display = 'none';
-    modalEmailInput.value = '';
-}
-
-function validateEmail(email) {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function generateItinerary(email) {
+function generateItinerary() {
     const isRegeneration = hasGeneratedItinerary;
     isGenerating = true;
 
     if (!isRegeneration) {
         loadingSpinner.style.display = 'flex';
-        generateBtn.disabled = true;
         messageInput.disabled = true;
         sendBtn.disabled = true;
     }
@@ -487,13 +437,10 @@ function generateItinerary(email) {
         ? 'Updating your itinerary...'
         : 'Generating your itinerary with AI + Milvus matching...');
 
-    const body = { session_id: currentSessionId };
-    if (email) body.email = email;
-
     authFetch('/itinerary/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ session_id: currentSessionId })
     })
     .then(response => response.json())
     .then(data => {
@@ -534,7 +481,6 @@ function generateItinerary(email) {
         if (itineraryUpdatingOverlay) {
             itineraryUpdatingOverlay.style.display = 'none';
         }
-        generateBtn.disabled = false;
         messageInput.disabled = false;
         sendBtn.disabled = false;
         messageInput.focus();
@@ -673,8 +619,6 @@ function startNewChat() {
     messageInput.value = '';
     messageInput.disabled = false;
     sendBtn.disabled = true;
-    generateBtn.disabled = false;
-    actionButtons.style.display = 'none';
     itineraryPanel.style.display = 'none';
     itineraryPanel.classList.remove('mobile-open');
     if (viewItineraryBtn) {
