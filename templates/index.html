@@ -8,6 +8,10 @@
 </head>
 <body>
     <div class="container">
+        <!-- Mobile hamburger toggle -->
+        <button id="sidebarToggle" class="sidebar-toggle" aria-label="Toggle menu">&#9776;</button>
+        <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header">
@@ -131,13 +135,23 @@
                     <p>Generating your itinerary with AI + media matching...</p>
                 </div>
             </div>
+
+            <button id="viewItineraryBtn" class="view-itinerary-btn" style="display: none;">
+                📋 View Itinerary
+            </button>
         </main>
 
         <!-- Itinerary Panel -->
         <aside id="itineraryPanel" class="itinerary-panel" style="display: none;">
             <div class="panel-header">
+                <button id="backToChat" class="back-to-chat-btn">&#8592; Back to Chat</button>
                 <h3>Your Itinerary</h3>
                 <button id="closePanel" class="close-btn">×</button>
+            </div>
+
+            <div id="itineraryUpdatingOverlay" class="itinerary-updating-overlay" style="display: none;">
+                <div class="spinner"></div>
+                <span>Updating your itinerary...</span>
             </div>
 
             <div id="itineraryContent" class="itinerary-content">
