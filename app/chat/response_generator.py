@@ -124,7 +124,7 @@ IMPORTANT:
 - Do NOT re-ask about information already collected (check the "collected so far" list)
 - Keep it conversational and brief
 
-Example good response: "How exciting, Chamil! A family trip to Sri Lanka with the kids sounds amazing! 🌴 I'll make sure to find wheelchair-accessible options. What's your email so I can save your itinerary?"
+Example good response: "How exciting, Chamil! A family trip to Sri Lanka with the kids sounds amazing! 🌴 I'll make sure to find wheelchair-accessible options. What type of experiences are you looking for?"
 
 Example bad response: "So you want to go to Sigiriya, Galle and Sri Lanka in mid April for 5 days with 2 kids and your father who needs a wheelchair. Is that correct? Now, where would you like to travel?"
 """

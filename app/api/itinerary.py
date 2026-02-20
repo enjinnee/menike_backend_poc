@@ -29,7 +29,6 @@ media_processor = MediaProcessor()
 class ItineraryRequest(BaseModel):
     # --- AI-powered chat-based flow (recommended) ---
     session_id: Optional[str] = None   # Session from POST /api/session/new
-    email: Optional[str] = None         # Override email (used by frontend modal)
 
     # --- Legacy fallback (if session_id not provided) ---
     prompt: Optional[str] = None        # e.g. "3-day trip to Galle and Ella"
@@ -57,7 +56,6 @@ class ItineraryResponse(BaseModel):
     destination: str
     days: int
     status: str
-    user_email: Optional[str] = None
     activities: List[ActivityResponse]
     rich_itinerary: Optional[dict] = None  # Full AI-generated itinerary with media URLs
     final_video_url: Optional[str] = None
@@ -101,8 +99,6 @@ async def generate_itinerary(
         requirements = manager.extract_requirements()
         conversation_summary = manager.get_conversation_summary()
 
-        # Use email from modal if provided, else fall back to conversation-extracted email
-        user_email = req.email or requirements.get("email") or "unknown@example.com"
         destination = requirements.get("destination") or "Sri Lanka"
 
         # Calculate duration from dates
@@ -127,7 +123,7 @@ async def generate_itinerary(
             raise HTTPException(status_code=500, detail=f"AI provider not configured: {str(e)}")
 
         ai_gen = AIItineraryGenerator(provider)
-        rich_itinerary = ai_gen.generate_itinerary(conversation_summary, user_email)
+        rich_itinerary = ai_gen.generate_itinerary(conversation_summary)
 
         if not rich_itinerary:
             raise HTTPException(
@@ -151,7 +147,6 @@ async def generate_itinerary(
         prompt_text = req.prompt
         destination = req.destination
         days = req.days
-        user_email = None
         rich_itinerary = None
 
         raw_activities = _legacy_gen.generate(req.prompt, req.destination, req.days)
@@ -165,7 +160,6 @@ async def generate_itinerary(
         destination=destination,
         days=days,
         status="generated",
-        user_email=user_email,
         rich_itinerary_json=json.dumps(rich_itinerary) if rich_itinerary else None,
     )
     session.add(itinerary)
@@ -475,7 +469,6 @@ def _build_response(
         destination=itinerary.destination,
         days=itinerary.days,
         status=itinerary.status,
-        user_email=itinerary.user_email,
         rich_itinerary=rich_itinerary,
         final_video_url=final_vid.video_url if final_vid else None,
         activities=[

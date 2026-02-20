@@ -75,7 +75,7 @@ When the user mentions NEW information for a field that ALREADY has a value, you
 - SPECIAL_REQUIREMENTS: If user adds new requirements, combine with existing ones (merge)
 - PREFERENCES: If user adds new preferences, combine with existing ones (merge)
 - For fields that should MERGE (destination, special_requirements, preferences): combine old + new, removing duplicates
-- For fields that should REPLACE (dates, travelers, budget, email): use the new value
+- For fields that should REPLACE (dates, travelers, budget): use the new value
 - If there is a CONFLICT (e.g., user changes destination entirely: "Actually, forget Sigiriya, let's go to Kandy"), use the user's latest intent
 - If NO new information is mentioned for a field, return the CURRENT value (not null)
 
@@ -128,10 +128,7 @@ When the user mentions NEW information for a field that ALREADY has a value, you
 - "food" or "foodie" → "culinary experiences, local food"
 - "nature" → "nature, wildlife, scenic views"
 
-### 7. EMAIL - Look for email patterns
-- Any text with @ symbol that looks like email
-
-### 8. LANGUAGE - Detect language preferences
+### 7. LANGUAGE - Detect language preferences
 - "in Spanish" or "Spanish speaking guide" → "Spanish"
 - If user writes in non-English, note that language
 

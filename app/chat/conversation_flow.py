@@ -34,11 +34,6 @@ CONVERSATION_STEPS = [
         "required": True,
     },
     {
-        "field": "email",
-        "question": "What is your email address? (So I can save your itinerary)",
-        "required": True,
-    },
-    {
         "field": "preferences",
         "question": "What type of experiences do you prefer? (e.g., adventure, relaxation, cultural, food, nightlife, history)",
         "required": True,
@@ -55,7 +50,7 @@ CONVERSATION_STEPS = [
     },
 ]
 
-REQUIRED_FIELDS = ["email", "destination", "start_date", "end_date", "travelers"]
+REQUIRED_FIELDS = ["destination", "start_date", "end_date", "travelers"]
 
 
 class ConversationFlow:
@@ -65,7 +60,6 @@ class ConversationFlow:
         self.user_requirements: Dict[str, Optional[str]] = {
             "name": None,
             "language": None,
-            "email": None,
             "destination": None,
             "start_date": None,
             "end_date": None,
