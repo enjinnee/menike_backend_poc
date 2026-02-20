@@ -8,7 +8,7 @@ from typing import Optional
 from app.providers.base import AIProvider, AIProviderError
 
 
-def _build_itinerary_prompt(conversation_summary: str, user_email: str) -> str:
+def _build_itinerary_prompt(conversation_summary: str) -> str:
     return f"""Generate a complete, detailed travel itinerary in JSON format.
 
 IMPORTANT: The response MUST be valid, complete JSON with NO markdown formatting and NO truncation.
@@ -16,11 +16,8 @@ IMPORTANT: The response MUST be valid, complete JSON with NO markdown formatting
 Conversation Summary (extract all travel details from this):
 {conversation_summary}
 
-User Email: {user_email}
-
 Required JSON format:
 {{
-  "user_email": "{user_email}",
   "destination": "string",
   "start_date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD",
@@ -153,13 +150,13 @@ class AIItineraryGenerator:
         self.provider = provider
 
     def generate_itinerary(
-        self, conversation_summary: str, user_email: str
+        self, conversation_summary: str
     ) -> Optional[dict]:
         """
         Generate a structured itinerary from the conversation summary.
         Returns a dict following the rich itinerary JSON schema.
         """
-        prompt = _build_itinerary_prompt(conversation_summary, user_email)
+        prompt = _build_itinerary_prompt(conversation_summary)
 
         try:
             response_text = self.provider.generate_content(prompt)

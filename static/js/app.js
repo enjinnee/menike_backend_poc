@@ -506,7 +506,6 @@ function displayItinerary(itinerary, rawData) {
         <p><strong>Duration:</strong> ${itinerary.duration_days || rawData.days || 'N/A'} days</p>
         <p><strong>Dates:</strong> ${itinerary.start_date || 'N/A'} to ${itinerary.end_date || 'N/A'}</p>
         ${itinerary.budget ? `<p><strong>Budget:</strong> $${itinerary.budget} ${itinerary.currency || 'USD'}</p>` : ''}
-        ${itinerary.user_email || rawData.user_email ? `<p><strong>Email:</strong> ${itinerary.user_email || rawData.user_email}</p>` : ''}
         <p><strong>DB ID:</strong> <small>${rawData.id || 'N/A'}</small></p>
     `;
     itineraryContent.appendChild(headerSection);
