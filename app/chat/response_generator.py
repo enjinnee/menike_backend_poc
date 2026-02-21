@@ -37,8 +37,7 @@ class ResponseGenerator:
                     return (
                         f"Wow, {user_name}! 🎉 You've given me everything I need in one go - that's fantastic! "
                         f"I can see you're heading to {user_requirements.get('destination', 'an amazing destination')}. "
-                        "Click the 'Generate Itinerary' button when you're ready, and let's make your trip unforgettable! ✨\n\n"
-                        "Feel free to ask me any questions about your destination - I'm happy to help! 😊"
+                        "Let me start crafting your perfect itinerary right away! ✨"
                     )
                 else:
                     return (
@@ -86,11 +85,12 @@ Conversation so far:
 Their latest message: "{user_message}"
 
 IMPORTANT INSTRUCTIONS:
-- If the user is asking a QUESTION (about their destination, activities, recommendations, travel tips, safety, things to do, etc.), you MUST answer their question helpfully and thoroughly using your travel knowledge. After answering, gently remind them they can click "Generate Itinerary" whenever they're ready.
-- If the user is requesting CHANGES to their itinerary (e.g., "add a beach day", "swap the hotel", "remove Day 3 activity"), acknowledge the change request enthusiastically and let them know you'll regenerate an updated version. They can click "Generate Itinerary" to apply the changes.
-- If the user is NOT asking a question (just chatting, confirming details, saying thanks, etc.), generate a SHORT excited response (2-3 sentences) acknowledging their trip and telling them to click "Generate Itinerary".
+- If the user is asking a QUESTION (about their destination, activities, recommendations, travel tips, safety, things to do, etc.), you MUST answer their question helpfully and thoroughly using your travel knowledge.
+- If the user is requesting CHANGES to their itinerary (e.g., "add a beach day", "swap the hotel", "remove Day 3 activity"), acknowledge the change request enthusiastically and let them know you'll regenerate an updated version. They can click "Regenerate Itinerary" to apply the changes.
+- If the user is NOT asking a question (just chatting, confirming details, saying thanks, etc.), generate a SHORT excited response (2-3 sentences) acknowledging their trip. Let them know you're ready to help with any questions or changes.
+- NEVER tell the user to click a button to generate their itinerary - it happens automatically.
 - Always use their name naturally and add 1-2 relevant emojis.
-- Be a helpful travel expert, not just a button redirector!"""
+- Be a helpful travel expert!"""
 
             try:
                 return self.provider.generate_content(completion_prompt)
@@ -98,7 +98,7 @@ IMPORTANT INSTRUCTIONS:
                 dest = user_requirements.get('destination', 'your destination')
                 return (
                     f"Perfect, {name_greeting}I have everything I need for your trip to {dest}! 🎉 "
-                    "Click the 'Generate Itinerary' button when you're ready! ✨"
+                    "Let me put together your itinerary now! ✨"
                 )
         else:
             response_prompt = f"""You are Manike, a warm and intelligent travel planning assistant.
