@@ -57,7 +57,7 @@ async def send_message(
         "response": response,
         "requirements": manager.extract_requirements(),
         "is_complete": manager.is_requirements_complete(),
-        "requirements_complete": manager.is_requirements_complete(),
+        "requirements_complete": manager.is_ready_to_generate(),
         "has_changes": manager.has_changes_since_generation(),
         "messages": manager.chat_history,
     }
@@ -104,7 +104,7 @@ async def process_voice_message(
     return {
         "response": response,
         "requirements": manager.extract_requirements(),
-        "requirements_complete": manager.is_requirements_complete(),
+        "requirements_complete": manager.is_ready_to_generate(),
         "has_changes": manager.has_changes_since_generation(),
     }
 

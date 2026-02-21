@@ -15,12 +15,12 @@ CONVERSATION_STEPS = [
     },
     {
         "field": "start_date",
-        "question": "What is your travel start date? (Please use YYYY-MM-DD format)",
+        "question": "When are you planning to start your trip? (e.g., March 15th, mid April, next Friday)",
         "required": True,
     },
     {
         "field": "end_date",
-        "question": "What is your travel end date? (Please use YYYY-MM-DD format)",
+        "question": "And when do you plan to wrap up the trip? (e.g., April 20th, after 5 days)",
         "required": True,
     },
     {
