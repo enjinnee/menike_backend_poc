@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from app.api import auth, scenes, itinerary, experiences, tenants, images, cinematic_clips, admin
@@ -19,6 +20,19 @@ app = FastAPI(
     title="Manike B2B AI Engine",
     version="2.0.0",
     description="Multi-tenant AI Scene Orchestrator and Itinerary Engine"
+)
+
+# CORS — allow local dev frontends and production server to talk to this backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://34.171.132.91",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Serve static files (CSS, JS)
