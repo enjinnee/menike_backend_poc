@@ -7,7 +7,7 @@ import ssl
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
-import boto3
+from google.cloud import storage as gcs_storage
 import certifi
 
 class MediaProcessor:
@@ -33,12 +33,16 @@ class MediaProcessor:
                 ext = os.path.splitext(parsed.path)[1] or ".mp4"
                 local_path = os.path.join(tempfile.gettempdir(), f"clip_{uuid.uuid4().hex}{ext}")
 
-                # Prefer boto3 for S3 URLs to avoid local SSL trust-store issues.
+                # Prefer GCS client for GCS URLs to avoid local SSL trust-store issues.
                 host = parsed.netloc.lower()
-                if ".s3." in host and host.endswith(".amazonaws.com"):
-                    bucket = host.split(".s3.")[0]
-                    key = parsed.path.lstrip("/")
-                    boto3.client("s3").download_file(bucket, key, local_path)
+                if host == "storage.googleapis.com":
+                    # URL format: https://storage.googleapis.com/{bucket}/{key}
+                    parts = parsed.path.lstrip("/").split("/", 1)
+                    bucket_name = parts[0]
+                    key = parts[1] if len(parts) > 1 else ""
+                    client = gcs_storage.Client()
+                    blob = client.bucket(bucket_name).blob(key)
+                    blob.download_to_filename(local_path)
                     return local_path
 
                 ssl_ctx = ssl.create_default_context(cafile=certifi.where())

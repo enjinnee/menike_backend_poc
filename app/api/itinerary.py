@@ -8,12 +8,10 @@ from app.models.sql_models import (
 )
 from app.services.generators import ItineraryGenerator
 from app.services.matcher import match_image, match_clip
-from app.services.media_processor import MediaProcessor
-from app.services.storage import storage_service
 from app.services.ai_itinerary_generator import AIItineraryGenerator
+from app.services.video_compiler import VideoCompilerFactory
 from app.chat.session import chat_session_store
 from app.providers.factory import ProviderFactory
-import subprocess
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from pydantic import BaseModel
@@ -23,7 +21,6 @@ router = APIRouter(prefix="/itinerary", tags=["Itinerary Service"])
 
 # Legacy mock generator (kept for backward compat)
 _legacy_gen = ItineraryGenerator()
-media_processor = MediaProcessor()
 
 
 class ItineraryRequest(BaseModel):
@@ -342,31 +339,25 @@ async def compile_video(
             detail="No cinematic clips are tagged to this itinerary. Upload clips and regenerate."
         )
 
-    # Stitch all clips together
-    output_path = f"/tmp/final_video_{itinerary.id}.mp4"
+    # Compile via the configured backend (local FFmpeg or Cloud Run Job)
+    compiler = VideoCompilerFactory.create()
     try:
-        final_local = media_processor.stitch_scenes(clip_urls, output_path)
-    except subprocess.CalledProcessError:
-        raise HTTPException(
-            status_code=422,
-            detail="Unable to compile final video due to incompatible clip encoding/timestamps."
-        )
-
-    # Upload to S3
-    s3_key = f"tenants/{tenant_id}/final-video/{itinerary.id}.mp4"
-    final_url = storage_service.upload_file(final_local, s3_key)
+        result = compiler.compile(clip_urls, itinerary.id, tenant_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     # Save to DB
     final_video = FinalVideo(
         tenant_id=tenant_id,
         itinerary_id=itinerary.id,
-        video_url=final_url,
-        status="compiled",
+        video_url=result.video_url or "",
+        status=result.status,
     )
     session.add(final_video)
 
-    itinerary.status = "video_compiled"
-    session.add(itinerary)
+    if not result.is_async:
+        itinerary.status = "video_compiled"
+        session.add(itinerary)
 
     try:
         session.commit()
@@ -391,8 +382,9 @@ async def compile_video(
             }
         raise
 
-    return {
-        "message": "Final cinematic video compiled successfully",
+    response = {
+        "message": "Final cinematic video compiled successfully" if not result.is_async
+                   else "Video compilation started — poll GET /itinerary/{id} for status",
         "final_video": {
             "id": final_video.id,
             "video_url": final_video.video_url,
@@ -401,6 +393,12 @@ async def compile_video(
             "clips_used": len(clip_urls),
         }
     }
+
+    if result.is_async:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=response, status_code=202)
+
+    return response
 
 
 # ---------------------------------------------------------------------------
