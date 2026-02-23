@@ -17,10 +17,14 @@ router = APIRouter(prefix="/images", tags=["Image Library"])
 
 class ImageCreate(BaseModel):
     name: str
-    tags: str           # comma-separated: "galle,fort,sunset"
+    tags: str                            # comma-separated: "galle,fort,sunset"
     location: Optional[str] = None
     image_url: Optional[str] = None      # S3 URL
     s3_key: Optional[str] = None         # Relative key under configured S3 base prefix
+    description: Optional[str] = None   # e.g. "A stunning sunset view at the historic Galle Fort"
+    type: Optional[str] = None          # e.g. "heritage", "beach", "nature", "adventure"
+    reviews: Optional[str] = None       # e.g. "4.8/5 - Highly recommended for photographers"
+    approximate: Optional[str] = None   # e.g. "Entry fee: $3, Best time: 5-7pm"
 
 
 class ImageResponse(BaseModel):
@@ -30,6 +34,10 @@ class ImageResponse(BaseModel):
     tags: str
     location: Optional[str]
     image_url: str
+    description: Optional[str]
+    type: Optional[str]
+    reviews: Optional[str]
+    approximate: Optional[str]
     created_at: str
 
 
@@ -68,26 +76,34 @@ async def upload_image(
         tags=data.tags.lower(),
         location=data.location,
         image_url=image_url,
+        description=data.description,
+        type=data.type,
+        reviews=data.reviews,
+        approximate=data.approximate,
     )
     session.add(image)
     session.commit()
     session.refresh(image)
 
     # 2. Generate embedding and save to Milvus (semantic search)
-    text_for_embedding = f"{data.name} {data.tags} {data.location or ''}"
+    text_for_embedding = f"{data.name} {data.tags} {data.location or ''} {data.type or ''} {data.description or ''}"
     embedding = generate_embedding(text_for_embedding)
     metadata = {
         "name": data.name,
         "tags": data.tags.lower(),
         "location": data.location or "",
         "image_url": image_url,
-        "pg_id": image.id,  # Link back to PostgreSQL
+        "description": data.description or "",
+        "type": data.type or "",
+        "pg_id": image.id,
     }
     milvus_client.insert_image_vector(image.id, tenant_id, embedding, metadata)
 
     return ImageResponse(
         id=image.id, tenant_id=image.tenant_id, name=image.name,
         tags=image.tags, location=image.location, image_url=image.image_url,
+        description=image.description, type=image.type,
+        reviews=image.reviews, approximate=image.approximate,
         created_at=str(image.created_at),
     )
 
@@ -97,6 +113,10 @@ async def upload_image_file(
     name: str = Form(...),
     tags: str = Form(...),
     location: Optional[str] = Form(default=None),
+    description: Optional[str] = Form(default=None),
+    type: Optional[str] = Form(default=None),
+    reviews: Optional[str] = Form(default=None),
+    approximate: Optional[str] = Form(default=None),
     file: UploadFile = File(...),
     tenant_id: str = Depends(get_current_tenant_id),
     session: Session = Depends(get_session),
@@ -112,18 +132,24 @@ async def upload_image_file(
         tags=tags.lower(),
         location=location,
         image_url=image_url,
+        description=description,
+        type=type,
+        reviews=reviews,
+        approximate=approximate,
     )
     session.add(image)
     session.commit()
     session.refresh(image)
 
-    text_for_embedding = f"{name} {tags} {location or ''}"
+    text_for_embedding = f"{name} {tags} {location or ''} {type or ''} {description or ''}"
     embedding = generate_embedding(text_for_embedding)
     metadata = {
         "name": name,
         "tags": tags.lower(),
         "location": location or "",
         "image_url": image_url,
+        "description": description or "",
+        "type": type or "",
         "pg_id": image.id,
     }
     milvus_client.insert_image_vector(image.id, tenant_id, embedding, metadata)
@@ -131,6 +157,8 @@ async def upload_image_file(
     return ImageResponse(
         id=image.id, tenant_id=image.tenant_id, name=image.name,
         tags=image.tags, location=image.location, image_url=image.image_url,
+        description=image.description, type=image.type,
+        reviews=image.reviews, approximate=image.approximate,
         created_at=str(image.created_at),
     )
 
@@ -147,6 +175,8 @@ async def list_images(
         ImageResponse(
             id=img.id, tenant_id=img.tenant_id, name=img.name,
             tags=img.tags, location=img.location, image_url=img.image_url,
+            description=img.description, type=img.type,
+            reviews=img.reviews, approximate=img.approximate,
             created_at=str(img.created_at),
         ) for img in images
     ]

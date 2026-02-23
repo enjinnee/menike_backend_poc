@@ -36,6 +36,10 @@ class ClipCreate(BaseModel):
     s3_key: Optional[str] = None           # Relative key under configured S3 base prefix
     duration: Optional[float] = None
     description: Optional[str] = None
+    location: Optional[str] = None         # e.g. "Galle, Sri Lanka"
+    type: Optional[str] = None            # e.g. "drone", "timelapse", "underwater", "ground"
+    reviews: Optional[str] = None         # e.g. "4.9/5 - Perfect for travel reels"
+    approximate: Optional[str] = None     # e.g. "Duration: 30s, Resolution: 4K"
 
 
 class ClipResponse(BaseModel):
@@ -46,6 +50,10 @@ class ClipResponse(BaseModel):
     video_url: str
     duration: Optional[float]
     description: Optional[str]
+    location: Optional[str]
+    type: Optional[str]
+    reviews: Optional[str]
+    approximate: Optional[str]
     created_at: str
 
 
@@ -89,20 +97,26 @@ async def upload_clip(
         video_url=video_url,
         duration=data.duration,
         description=data.description,
+        location=data.location,
+        type=data.type,
+        reviews=data.reviews,
+        approximate=data.approximate,
     )
     session.add(clip)
     session.commit()
     session.refresh(clip)
 
     # 2. Generate embedding and save to Milvus (semantic search)
-    text_for_embedding = f"{data.name} {data.tags} {data.description or ''}"
+    text_for_embedding = f"{data.name} {data.tags} {data.description or ''} {data.location or ''} {data.type or ''}"
     embedding = generate_embedding(text_for_embedding)
     metadata = {
         "name": data.name,
         "tags": data.tags.lower(),
         "video_url": video_url,
         "duration": data.duration,
-        "pg_id": clip.id,  # Link back to PostgreSQL
+        "location": data.location or "",
+        "type": data.type or "",
+        "pg_id": clip.id,
     }
     milvus_client.insert_clip_vector(clip.id, tenant_id, embedding, metadata)
 
@@ -110,6 +124,8 @@ async def upload_clip(
         id=clip.id, tenant_id=clip.tenant_id, name=clip.name,
         tags=clip.tags, video_url=clip.video_url,
         duration=clip.duration, description=clip.description,
+        location=clip.location, type=clip.type,
+        reviews=clip.reviews, approximate=clip.approximate,
         created_at=str(clip.created_at),
     )
 
@@ -120,6 +136,10 @@ async def upload_clip_file(
     tags: str = Form(...),
     duration: Optional[float] = Form(default=None),
     description: Optional[str] = Form(default=None),
+    location: Optional[str] = Form(default=None),
+    type: Optional[str] = Form(default=None),
+    reviews: Optional[str] = Form(default=None),
+    approximate: Optional[str] = Form(default=None),
     file: UploadFile = File(...),
     tenant_id: str = Depends(get_current_tenant_id),
     session: Session = Depends(get_session),
@@ -136,18 +156,24 @@ async def upload_clip_file(
         video_url=video_url,
         duration=duration,
         description=description,
+        location=location,
+        type=type,
+        reviews=reviews,
+        approximate=approximate,
     )
     session.add(clip)
     session.commit()
     session.refresh(clip)
 
-    text_for_embedding = f"{name} {tags} {description or ''}"
+    text_for_embedding = f"{name} {tags} {description or ''} {location or ''} {type or ''}"
     embedding = generate_embedding(text_for_embedding)
     metadata = {
         "name": name,
         "tags": tags.lower(),
         "video_url": video_url,
         "duration": duration,
+        "location": location or "",
+        "type": type or "",
         "pg_id": clip.id,
     }
     milvus_client.insert_clip_vector(clip.id, tenant_id, embedding, metadata)
@@ -156,6 +182,8 @@ async def upload_clip_file(
         id=clip.id, tenant_id=clip.tenant_id, name=clip.name,
         tags=clip.tags, video_url=clip.video_url,
         duration=clip.duration, description=clip.description,
+        location=clip.location, type=clip.type,
+        reviews=clip.reviews, approximate=clip.approximate,
         created_at=str(clip.created_at),
     )
 
@@ -173,6 +201,8 @@ async def list_clips(
             id=c.id, tenant_id=c.tenant_id, name=c.name,
             tags=c.tags, video_url=c.video_url,
             duration=c.duration, description=c.description,
+            location=c.location, type=c.type,
+            reviews=c.reviews, approximate=c.approximate,
             created_at=str(c.created_at),
         ) for c in clips
     ]

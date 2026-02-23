@@ -44,6 +44,10 @@ class ImageLibrary(SQLModel, table=True):
     tags: str                               # comma-separated: "galle,fort,sunset,heritage"
     location: Optional[str] = None          # e.g. "Galle, Sri Lanka"
     image_url: str                          # S3 URL
+    description: Optional[str] = None      # e.g. "A stunning sunset view at the historic Galle Fort"
+    type: Optional[str] = None             # e.g. "heritage", "beach", "nature", "adventure"
+    reviews: Optional[str] = None          # e.g. "4.8/5 - Highly recommended for photographers"
+    approximate: Optional[str] = None      # e.g. "Entry fee: $3, Best time: 5-7pm"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -59,6 +63,10 @@ class CinematicClip(SQLModel, table=True):
     video_url: str                          # S3 URL of the pre-made clip
     duration: Optional[float] = None        # seconds
     description: Optional[str] = None
+    location: Optional[str] = None          # e.g. "Galle, Sri Lanka"
+    type: Optional[str] = None             # e.g. "drone", "timelapse", "underwater", "ground"
+    reviews: Optional[str] = None          # e.g. "4.9/5 - Perfect for travel reels"
+    approximate: Optional[str] = None      # e.g. "Duration: 30s, Resolution: 4K"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
