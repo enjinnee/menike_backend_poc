@@ -1,0 +1,5 @@
+google-cloud-storage
+sqlmodel
+psycopg2-binary
+python-dotenv
+certifi

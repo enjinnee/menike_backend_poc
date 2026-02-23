@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Union
 from jose import JWTError, jwt
@@ -9,7 +10,7 @@ from app.core.database import get_session
 from sqlmodel import Session, select
 
 # Configuration
-SECRET_KEY = "super-secret-key-manike-ai" # In production, use env var
+SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-manike-ai")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 day
 

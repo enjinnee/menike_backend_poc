@@ -1,0 +1,16 @@
+[Unit]
+Description=Manike AI Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=manike
+Group=manike
+WorkingDirectory=/home/manike/menike_backend_poc
+EnvironmentFile=/home/manike/menike_backend_poc/.env
+ExecStart=/home/manike/menike_backend_poc/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

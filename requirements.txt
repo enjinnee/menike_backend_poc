@@ -11,9 +11,11 @@ pydantic
 sqlalchemy
 psycopg2-binary
 python-dotenv
-boto3
+google-cloud-storage
 certifi
 requests
 # AI Providers
 google-genai
 anthropic
+# Video compiler (cloudrun mode only)
+google-cloud-run
