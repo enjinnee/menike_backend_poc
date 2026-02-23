@@ -234,6 +234,50 @@ done
 
 The `deploy/` directory contains everything needed to provision the backend on GCP.
 
+### Staging Environment (Project: `manike-ai-staging`)
+
+> Environment variables are stored in `.env` on the `manike-app` Compute Engine VM — not in Cloud Run or Secret Manager. Use the links and commands below to view or edit them.
+
+| Resource | GCP Console Link |
+|----------|-----------------|
+| All Compute Engine VMs | [View VMs](https://console.cloud.google.com/compute/instances?project=manike-ai-staging) |
+| `manike-app` VM (FastAPI) | [View instance](https://console.cloud.google.com/compute/instancesDetail/zones/us-central1-a/instances/manike-app?project=manike-ai-staging) |
+| `manike-postgres` VM | [View instance](https://console.cloud.google.com/compute/instancesDetail/zones/us-central1-a/instances/manike-postgres?project=manike-ai-staging) |
+| `manike-milvus` VM | [View instance](https://console.cloud.google.com/compute/instancesDetail/zones/us-central1-a/instances/manike-milvus?project=manike-ai-staging) |
+| `manike-ai-media` GCS bucket | [View bucket](https://console.cloud.google.com/storage/browser/manike-ai-media?project=manike-ai-staging) |
+| Cloud Run Jobs | [View jobs](https://console.cloud.google.com/run/jobs?project=manike-ai-staging) |
+| `manike-video-compiler` job | [View job](https://console.cloud.google.com/run/jobs/details/us-central1/manike-video-compiler?project=manike-ai-staging) |
+| VM serial/startup logs | [View logs](https://console.cloud.google.com/logs/query?project=manike-ai-staging) |
+| Firewall rules | [View firewall](https://console.cloud.google.com/networking/firewalls/list?project=manike-ai-staging) |
+| Cloud NAT | [View NAT](https://console.cloud.google.com/net-services/nat/list?project=manike-ai-staging) |
+
+**To view or edit environment variables on the staging VM:**
+```bash
+# SSH into the app VM
+gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging
+
+# View current env vars
+sudo cat /home/manike/menike_backend_poc/.env
+
+# Edit env vars
+sudo nano /home/manike/menike_backend_poc/.env
+
+# Restart the service after changes
+sudo systemctl restart manike-api
+sudo systemctl status manike-api --no-pager
+```
+
+**Or edit in a single command without SSH:**
+```bash
+# Print all env vars
+gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging \
+  --command='sudo cat /home/manike/menike_backend_poc/.env'
+
+# Update a single variable (e.g. AI_PROVIDER)
+gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging \
+  --command='sudo sed -i "s/^AI_PROVIDER=.*/AI_PROVIDER=claude/" /home/manike/menike_backend_poc/.env && sudo systemctl restart manike-api'
+```
+
 ### Infrastructure
 
 | Resource | Type | Details |
