@@ -53,10 +53,8 @@ cp "${REPO_ROOT}/app/models/sql_models.py"          "${BUILD_DIR}/app/models/"
 # 2. Build & push image
 # ---------------------------------------------------------------------------
 echo "==> Building image: ${IMAGE_URI}"
-docker build -t "${IMAGE_URI}" "${BUILD_DIR}"
-
-echo "==> Pushing image..."
-docker push "${IMAGE_URI}"
+# Cloud Run requires linux/amd64; use buildx to cross-compile on Apple Silicon
+docker buildx build --platform linux/amd64 -t "${IMAGE_URI}" --push "${BUILD_DIR}"
 
 # ---------------------------------------------------------------------------
 # 3. Create (or update) the Cloud Run Job
