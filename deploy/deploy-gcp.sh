@@ -10,6 +10,7 @@
 #       [--postgres-password YOUR_PG_PASSWORD] \
 #       [--zone us-central1-a] \
 #       [--bucket manike-ai-media] \
+#       [--signed-url-expiry 60] \
 #       [--deploy-method git|scp] \
 #       [--repo-url REPO_URL] \
 #       [--repo-branch BRANCH]
@@ -32,6 +33,9 @@ PROJECT=""
 REPO_URL="https://github.com/YOUR_ORG/menike_backend_poc.git"
 REPO_BRANCH="main"
 DEPLOY_METHOD="git"   # "git" or "scp"
+SIGNED_URL_EXPIRY=60
+SA_NAME="manike-storage"
+SA_KEY_FILE="$(pwd)/manike-storage-key.json"
 
 # ──────────────────────────── Parse args ──────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -45,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         --repo-url)         REPO_URL="$2";         shift 2 ;;
         --repo-branch)      REPO_BRANCH="$2";      shift 2 ;;
         --deploy-method)    DEPLOY_METHOD="$2";    shift 2 ;;
+        --signed-url-expiry) SIGNED_URL_EXPIRY="$2"; shift 2 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -263,8 +268,21 @@ echo "==> Creating GCS bucket: gs://$BUCKET"
 gsutil mb -l "$REGION" "gs://$BUCKET" 2>/dev/null \
     || echo "    (bucket gs://$BUCKET already exists)"
 
-gsutil iam ch allUsers:objectViewer "gs://$BUCKET" 2>/dev/null \
-    || echo "    (could not set public access — org policy may prevent allUsers; media will use signed URLs)"
+# ──────────────── Service Account for Signed URLs ─────────────────
+echo "==> Creating service account for signed URLs..."
+
+gcloud iam service-accounts create "$SA_NAME" \
+    --display-name="Manike Storage Service Account" \
+    --project="$PROJECT" \
+    2>/dev/null || echo "    (service account $SA_NAME already exists)"
+
+gsutil iam ch \
+    "serviceAccount:${SA_NAME}@${PROJECT}.iam.gserviceaccount.com:objectAdmin" \
+    "gs://$BUCKET"
+
+echo "==> Downloading service account key to: $SA_KEY_FILE"
+gcloud iam service-accounts keys create "$SA_KEY_FILE" \
+    --iam-account="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 
 # ──────────────── Wait for internal IPs ───────────────────────────
 echo "==> Waiting for VM internal IPs..."
@@ -318,6 +336,8 @@ MILVUS_HOST=${MILVUS_IP}
 MILVUS_PORT=19530
 GCS_BUCKET_NAME=${BUCKET}
 GCS_BASE_PREFIX=experience-images
+GOOGLE_APPLICATION_CREDENTIALS=/home/manike/menike_backend_poc/manike-storage-key.json
+GCS_SIGNED_URL_EXPIRY_MINUTES=${SIGNED_URL_EXPIRY}
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
@@ -346,6 +366,8 @@ MILVUS_HOST=${MILVUS_IP}
 MILVUS_PORT=19530
 GCS_BUCKET_NAME=${BUCKET}
 GCS_BASE_PREFIX=experience-images
+GOOGLE_APPLICATION_CREDENTIALS=/home/manike/menike_backend_poc/manike-storage-key.json
+GCS_SIGNED_URL_EXPIRY_MINUTES=${SIGNED_URL_EXPIRY}
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
@@ -386,6 +408,19 @@ echo "    VM1 (PostgreSQL): manike-postgres  (internal: $PG_IP)"
 echo "    VM2 (Milvus):     manike-milvus    (internal: $MILVUS_IP)"
 echo "    VM3 (App):        manike-app       (public, ephemeral IP)"
 echo ""
+
+echo "==> Waiting for manike-app VM to accept SSH (~60s)..."
+sleep 60
+
+echo "==> Uploading service account key to manike-app..."
+gcloud compute scp "$SA_KEY_FILE" \
+    "manike-app:/home/manike/menike_backend_poc/manike-storage-key.json" \
+    --zone="$ZONE"
+gcloud compute ssh manike-app --zone="$ZONE" --command="
+    sudo chown manike:manike /home/manike/menike_backend_poc/manike-storage-key.json
+    sudo chmod 600 /home/manike/menike_backend_poc/manike-storage-key.json
+"
+echo "    Service account key uploaded and secured."
 
 if [[ "$DEPLOY_METHOD" == "scp" ]]; then
     echo "==> DEPLOY_METHOD=scp: Upload code to the VM after startup (~2 min):"
