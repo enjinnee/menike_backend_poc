@@ -230,6 +230,14 @@ async def generate_itinerary(
         session.add(itinerary)
         session.commit()
 
+    # Mark the chat session as generated so has_changes resets to False.
+    # Without this, every subsequent user message would set has_changes=True
+    # and trigger an unnecessary auto-regeneration on the frontend.
+    if req.session_id:
+        manager = chat_session_store.get_manager(req.session_id)
+        if manager:
+            manager.mark_generated()
+
     activities_list = [act for _, act in db_activities]
     return _build_response(itinerary, activities_list, session, rich_itinerary)
 

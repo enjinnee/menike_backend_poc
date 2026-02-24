@@ -373,16 +373,13 @@ function sendMessage() {
 // ---------------------------------------------------------------------------
 function handleAutoGenerate(data) {
     if (data.requirements_complete && !hasGeneratedItinerary && !isGenerating) {
-        // First-time auto-generation
+        // First-time auto-generation when all requirements are collected
         autoGenerateItinerary();
-    } else if (hasGeneratedItinerary && data.has_changes) {
-        // User modified requirements after generation — auto-regenerate
-        if (isGenerating) {
-            pendingRegenerate = true;
-        } else {
-            autoRegenerateItinerary();
-        }
     }
+    // After the first generation, do NOT auto-regenerate on field changes.
+    // The user reviews the itinerary and must explicitly accept or request
+    // modifications — the next generation is triggered by a new chat session
+    // or a deliberate user action.
 }
 
 function autoGenerateItinerary() {
@@ -514,10 +511,7 @@ function generateItinerary() {
         messageInput.focus();
 
         // If another change came in while we were generating, regenerate again
-        if (pendingRegenerate) {
-            pendingRegenerate = false;
-            autoRegenerateItinerary();
-        }
+        pendingRegenerate = false;
     });
 }
 
