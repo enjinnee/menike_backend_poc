@@ -26,7 +26,7 @@ class StorageService:
             self.signing_credentials = impersonated_credentials.Credentials(
                 source_credentials=self.credentials,
                 target_principal=service_account_email,
-                target_scopes=["https://www.googleapis.com/auth/devstorage.read_only"],
+                target_scopes=["https://www.googleapis.com/auth/iam"],
             )
         else:
             self.signing_credentials = self.credentials

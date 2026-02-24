@@ -295,6 +295,11 @@ gsutil iam ch \
     "serviceAccount:${SA_NAME}@${PROJECT}.iam.gserviceaccount.com:objectAdmin" \
     "gs://$BUCKET"
 
+# Grant the app VM SA objectAdmin on the bucket for direct uploads
+gsutil iam ch \
+    "serviceAccount:${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com:objectAdmin" \
+    "gs://$BUCKET"
+
 # Allow the app VM SA to impersonate the storage SA for signBlob calls
 gcloud iam service-accounts add-iam-policy-binding \
     "${SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \

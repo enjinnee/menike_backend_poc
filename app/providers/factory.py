@@ -17,7 +17,7 @@ class ProviderFactory:
 
         if provider_name == "gemini":
             api_key = os.getenv("GEMINI_API_KEY")
-            model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+            model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
             if not api_key:
                 raise ValueError("GEMINI_API_KEY environment variable is not set")
             return GeminiProvider(api_key=api_key, model=model)

@@ -83,7 +83,7 @@ AI_PROVIDER=gemini
 
 # Gemini
 GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-2.0-flash
+GEMINI_MODEL=gemini-2.5-flash
 
 # Claude (uncomment and set AI_PROVIDER=claude to use)
 # CLAUDE_API_KEY=your_claude_api_key_here
@@ -127,7 +127,7 @@ if [ "$PROVIDER" = "gemini" ]; then
   if [ -z "$GEMINI_API_KEY" ] || [ "$GEMINI_API_KEY" = "your_gemini_api_key_here" ]; then
     err "GEMINI_API_KEY is not set (AI_PROVIDER=gemini)"; ERRORS=1
   else
-    ok "AI Provider: Gemini (${GEMINI_MODEL:-gemini-2.0-flash})"
+    ok "AI Provider: Gemini (${GEMINI_MODEL:-gemini-2.5-flash})"
   fi
 elif [ "$PROVIDER" = "claude" ]; then
   if [ -z "$CLAUDE_API_KEY" ] || [ "$CLAUDE_API_KEY" = "your_claude_api_key_here" ]; then
