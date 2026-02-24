@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
@@ -339,10 +340,15 @@ async def compile_video(
             detail="No cinematic clips are tagged to this itinerary. Upload clips and regenerate."
         )
 
-    # Compile via the configured backend (local FFmpeg or Cloud Run Job)
+    # Compile via the configured backend (local FFmpeg or Cloud Run Job).
+    # Run in a thread executor so the blocking FFmpeg subprocess calls don't
+    # stall the async event loop.
     compiler = VideoCompilerFactory.create()
+    loop = asyncio.get_event_loop()
     try:
-        result = compiler.compile(clip_urls, itinerary.id, tenant_id)
+        result = await loop.run_in_executor(
+            None, lambda: compiler.compile(clip_urls, itinerary.id, tenant_id)
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

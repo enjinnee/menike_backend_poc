@@ -722,9 +722,27 @@ function addCompileVideoButton(itineraryId) {
 }
 
 async function compileAndShowVideo(itineraryId) {
-    addMessageToChat('assistant', '🎬 Compiling your cinematic trip video...');
+    // Show a live elapsed timer while the server compiles
+    const timerDiv = document.createElement('div');
+    timerDiv.className = 'message assistant-message';
+    timerDiv.id = 'compileTimerMessage';
+    timerDiv.innerHTML = `<div class="message-avatar">🤖</div><div class="message-content" id="compileTimerText">🎬 Compiling your cinematic trip video… 0s</div>`;
+    chatMessages.appendChild(timerDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    const startTime = Date.now();
+    const timerInterval = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const el = document.getElementById('compileTimerText');
+        if (el) el.textContent = `🎬 Compiling your cinematic trip video… ${elapsed}s`;
+    }, 1000);
+
     try {
         const res = await authFetch(`/itinerary/${itineraryId}/compile-video`, { method: 'POST' });
+
+        clearInterval(timerInterval);
+        const timerMsg = document.getElementById('compileTimerMessage');
+        if (timerMsg) timerMsg.remove();
 
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -739,12 +757,16 @@ async function compileAndShowVideo(itineraryId) {
         const data = await res.json();
         const videoUrl = data.final_video && data.final_video.video_url;
         if (videoUrl) {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
             showVideoPlayer(videoUrl);
-            addMessageToChat('assistant', '✅ Your cinematic video is ready! See the player at the bottom.');
+            addMessageToChat('assistant', `✅ Your cinematic video is ready! (compiled in ${elapsed}s) See the player at the bottom.`);
         } else {
             addMessageToChat('assistant', 'ℹ️ No cinematic clips were matched for this itinerary — video unavailable.');
         }
     } catch (e) {
+        clearInterval(timerInterval);
+        const timerMsg = document.getElementById('compileTimerMessage');
+        if (timerMsg) timerMsg.remove();
         console.error('Video compile error:', e);
         addMessageToChat('assistant', '⚠️ Could not compile video. You can still view your itinerary above.');
     }
