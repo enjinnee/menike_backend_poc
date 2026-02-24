@@ -287,6 +287,7 @@ async function handleVoiceTranscript(transcript) {
     isProcessingVoice = true;
     if (voiceInputManager) voiceInputManager.pause();
     addMessageToChat('user', message);
+    showTypingIndicator();
     if (avatarStatus) avatarStatus.textContent = 'Processing...';
     if (voiceStatus) voiceStatus.textContent = 'Processing your response...';
 
@@ -297,6 +298,8 @@ async function handleVoiceTranscript(transcript) {
             body: JSON.stringify({ session_id: currentSessionId, transcript: message })
         });
         const data = await response.json();
+
+        removeTypingIndicator();
 
         if (data.error) {
             addMessageToChat('assistant', `Error: ${data.error}`);
@@ -315,6 +318,7 @@ async function handleVoiceTranscript(transcript) {
         // Handle auto-generation
         handleAutoGenerate(data);
     } catch (error) {
+        removeTypingIndicator();
         console.error('Voice processing error:', error);
         addMessageToChat('assistant', 'Sorry, there was an error. Please try again.');
         if (voiceInputManager && videoModeEnabled) voiceInputManager.resume();
@@ -334,6 +338,7 @@ function sendMessage() {
     sendBtn.disabled = true;
     addMessageToChat('user', message);
     messageInput.value = '';
+    showTypingIndicator();
 
     authFetch('/api/chat/send', {
         method: 'POST',
@@ -342,6 +347,7 @@ function sendMessage() {
     })
     .then(response => response.json())
     .then(data => {
+        removeTypingIndicator();
         if (data.error) {
             addMessageToChat('assistant', `Error: ${data.error}`);
         } else {
@@ -351,6 +357,7 @@ function sendMessage() {
         }
     })
     .catch(error => {
+        removeTypingIndicator();
         console.error('Error:', error);
         addMessageToChat('assistant', 'Sorry, there was an error. Please try again.');
     })
@@ -388,6 +395,27 @@ function autoRegenerateItinerary() {
     }
     updateHeaderStatus('Updating your itinerary...');
     generateItinerary();
+}
+
+// ---------------------------------------------------------------------------
+// Typing indicator
+// ---------------------------------------------------------------------------
+function showTypingIndicator() {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message assistant-message typing-indicator';
+    messageDiv.id = 'typingIndicator';
+    messageDiv.innerHTML = `
+        <div class="message-avatar">🤖</div>
+        <div class="message-content">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        </div>`;
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function removeTypingIndicator() {
+    const indicator = document.getElementById('typingIndicator');
+    if (indicator) indicator.remove();
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +495,7 @@ function generateItinerary() {
                 addMessageToChat('assistant', `✅ Your itinerary has been updated — ${updateHint}.`);
             }
 
-            if (data.id) compileAndShowVideo(data.id);
+            if (data.id) addCompileVideoButton(data.id);
         }
     })
     .catch(error => {
@@ -669,6 +697,30 @@ function openItineraryMobile() {
 // ---------------------------------------------------------------------------
 // Cinematic video compilation
 // ---------------------------------------------------------------------------
+function addCompileVideoButton(itineraryId) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message assistant-message';
+    messageDiv.id = 'compileVideoMessage';
+
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-primary btn-small';
+    btn.textContent = '🎬 Accept Itinerary & Create Video';
+    btn.onclick = () => {
+        btn.disabled = true;
+        btn.textContent = 'Compiling...';
+        compileAndShowVideo(itineraryId);
+    };
+
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.appendChild(btn);
+
+    messageDiv.innerHTML = `<div class="message-avatar">🤖</div>`;
+    messageDiv.appendChild(content);
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
 async function compileAndShowVideo(itineraryId) {
     addMessageToChat('assistant', '🎬 Compiling your cinematic trip video...');
     try {
