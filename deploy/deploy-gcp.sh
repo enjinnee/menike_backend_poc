@@ -316,12 +316,25 @@ MILVUS_IP=$(gcloud compute instances describe manike-milvus \
 echo "    PostgreSQL internal IP: $PG_IP"
 echo "    Milvus internal IP:     $MILVUS_IP"
 
+# ──────────────────────── Static IP ──────────────────────────────
+echo "==> Reserving static external IP for app server..."
+
+gcloud compute addresses create manike-app-ip \
+    --region="$REGION" \
+    2>/dev/null || echo "    (static IP manike-app-ip already exists)"
+
+STATIC_IP=$(gcloud compute addresses describe manike-app-ip \
+    --region="$REGION" --format='get(address)')
+
+echo "    Static IP: $STATIC_IP"
+
 # ──────────────────────── VM3: App Server ─────────────────────────
 echo "==> Creating VM3 (App Server)..."
 
 gcloud compute instances create manike-app \
     --zone="$ZONE" \
     --machine-type=e2-micro \
+    --address="$STATIC_IP" \
     --tags=app-server \
     --image-family=ubuntu-2204-lts \
     --image-project=ubuntu-os-cloud \
@@ -427,7 +440,7 @@ echo "==> Deployment initiated! VMs are booting and running startup scripts."
 echo ""
 echo "    VM1 (PostgreSQL): manike-postgres  (internal: $PG_IP)"
 echo "    VM2 (Milvus):     manike-milvus    (internal: $MILVUS_IP)"
-echo "    VM3 (App):        manike-app       (public, ephemeral IP)"
+echo "    VM3 (App):        manike-app       (public, static IP: $STATIC_IP)"
 echo ""
 
 if [[ "$DEPLOY_METHOD" == "scp" ]]; then
@@ -454,20 +467,16 @@ if [[ "$DEPLOY_METHOD" == "scp" ]]; then
     echo ""
 fi
 
-echo "==> To get the public URL once VM3 is ready (~3-5 min):"
+echo "==> App server will be available at (once startup script completes ~3-5 min):"
 echo ""
-echo "    gcloud compute instances describe manike-app \\"
-echo "        --zone=$ZONE --format='get(networkInterfaces[0].accessConfigs[0].natIP)'"
-echo ""
-echo "    Or check serial output:"
-echo "    gcloud compute instances get-serial-port-output manike-app --zone=$ZONE | grep 'Manike API'"
+echo "    http://$STATIC_IP:8000"
 echo ""
 echo "==> SSH into VMs (IAP tunnel for private VMs):"
 echo "    gcloud compute ssh manike-postgres --zone=$ZONE --tunnel-through-iap"
 echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap"
 echo "    gcloud compute ssh manike-app --zone=$ZONE"
 echo ""
-echo "==> Swagger UI: http://<APP_IP>:8000/docs"
+echo "==> Swagger UI: http://$STATIC_IP:8000/docs"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "==> USEFUL OPERATIONAL COMMANDS"
