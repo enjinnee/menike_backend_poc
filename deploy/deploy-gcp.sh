@@ -19,6 +19,11 @@
 #   - gcloud CLI authenticated (gcloud auth login && gcloud auth application-default login)
 #   - Billing enabled on the GCP project
 #
+# Signed URL approach: keyless via IAM signBlob API.
+# The app VM runs as manike-app-sa, which is granted
+# roles/iam.serviceAccountTokenCreator on manike-storage-sa.
+# No key file is ever created or stored on disk.
+#
 
 set -euo pipefail
 
@@ -35,7 +40,7 @@ REPO_BRANCH="main"
 DEPLOY_METHOD="git"   # "git" or "scp"
 SIGNED_URL_EXPIRY=60
 SA_NAME="manike-storage"
-SA_KEY_FILE="$(pwd)/manike-storage-key.json"
+APP_SA_NAME="manike-app"
 
 # ──────────────────────────── Parse args ──────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -268,21 +273,36 @@ echo "==> Creating GCS bucket: gs://$BUCKET"
 gsutil mb -l "$REGION" "gs://$BUCKET" 2>/dev/null \
     || echo "    (bucket gs://$BUCKET already exists)"
 
-# ──────────────── Service Account for Signed URLs ─────────────────
-echo "==> Creating service account for signed URLs..."
+# ──────────────── Service Accounts (keyless signed URLs) ──────────
+# Two SAs:
+#   manike-storage-sa  — owns the GCS bucket, used as the signing identity
+#   manike-app-sa      — attached to the app VM, impersonates manike-storage-sa
+#                        via IAM signBlob (no key file ever created)
+echo "==> Creating service accounts..."
 
 gcloud iam service-accounts create "$SA_NAME" \
-    --display-name="Manike Storage Service Account" \
+    --display-name="Manike Storage SA (signing identity)" \
     --project="$PROJECT" \
     2>/dev/null || echo "    (service account $SA_NAME already exists)"
 
+gcloud iam service-accounts create "$APP_SA_NAME" \
+    --display-name="Manike App SA (attached to VM)" \
+    --project="$PROJECT" \
+    2>/dev/null || echo "    (service account $APP_SA_NAME already exists)"
+
+# Grant the storage SA objectAdmin on the bucket
 gsutil iam ch \
     "serviceAccount:${SA_NAME}@${PROJECT}.iam.gserviceaccount.com:objectAdmin" \
     "gs://$BUCKET"
 
-echo "==> Downloading service account key to: $SA_KEY_FILE"
-gcloud iam service-accounts keys create "$SA_KEY_FILE" \
-    --iam-account="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+# Allow the app VM SA to impersonate the storage SA for signBlob calls
+gcloud iam service-accounts add-iam-policy-binding \
+    "${SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
+    --member="serviceAccount:${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
+    --role="roles/iam.serviceAccountTokenCreator" \
+    --project="$PROJECT"
+
+echo "    Keyless signing configured — no key file created."
 
 # ──────────────── Wait for internal IPs ───────────────────────────
 echo "==> Waiting for VM internal IPs..."
@@ -306,7 +326,8 @@ gcloud compute instances create manike-app \
     --image-family=ubuntu-2204-lts \
     --image-project=ubuntu-os-cloud \
     --boot-disk-size=20GB \
-    --scopes=storage-rw,cloud-platform \
+    --service-account="${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
+    --scopes=cloud-platform \
     --metadata=startup-script="#!/bin/bash
 set -e
 
@@ -336,8 +357,8 @@ MILVUS_HOST=${MILVUS_IP}
 MILVUS_PORT=19530
 GCS_BUCKET_NAME=${BUCKET}
 GCS_BASE_PREFIX=experience-images
-GOOGLE_APPLICATION_CREDENTIALS=/home/manike/menike_backend_poc/manike-storage-key.json
 GCS_SIGNED_URL_EXPIRY_MINUTES=${SIGNED_URL_EXPIRY}
+GCS_SIGNING_SA_EMAIL=${SA_NAME}@${PROJECT}.iam.gserviceaccount.com
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
@@ -366,8 +387,8 @@ MILVUS_HOST=${MILVUS_IP}
 MILVUS_PORT=19530
 GCS_BUCKET_NAME=${BUCKET}
 GCS_BASE_PREFIX=experience-images
-GOOGLE_APPLICATION_CREDENTIALS=/home/manike/menike_backend_poc/manike-storage-key.json
 GCS_SIGNED_URL_EXPIRY_MINUTES=${SIGNED_URL_EXPIRY}
+GCS_SIGNING_SA_EMAIL=${SA_NAME}@${PROJECT}.iam.gserviceaccount.com
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
@@ -409,19 +430,6 @@ echo "    VM2 (Milvus):     manike-milvus    (internal: $MILVUS_IP)"
 echo "    VM3 (App):        manike-app       (public, ephemeral IP)"
 echo ""
 
-echo "==> Waiting for manike-app VM to accept SSH (~60s)..."
-sleep 60
-
-echo "==> Uploading service account key to manike-app..."
-gcloud compute scp "$SA_KEY_FILE" \
-    "manike-app:/home/manike/menike_backend_poc/manike-storage-key.json" \
-    --zone="$ZONE"
-gcloud compute ssh manike-app --zone="$ZONE" --command="
-    sudo chown manike:manike /home/manike/menike_backend_poc/manike-storage-key.json
-    sudo chmod 600 /home/manike/menike_backend_poc/manike-storage-key.json
-"
-echo "    Service account key uploaded and secured."
-
 if [[ "$DEPLOY_METHOD" == "scp" ]]; then
     echo "==> DEPLOY_METHOD=scp: Upload code to the VM after startup (~2 min):"
     echo ""
@@ -460,3 +468,66 @@ echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap"
 echo "    gcloud compute ssh manike-app --zone=$ZONE"
 echo ""
 echo "==> Swagger UI: http://<APP_IP>:8000/docs"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "==> USEFUL OPERATIONAL COMMANDS"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "── App Logs ────────────────────────────────────────────────────"
+echo ""
+echo "    # Tail live logs:"
+echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
+echo "        --command='sudo journalctl -u manike-api.service -f'"
+echo ""
+echo "    # Last 200 lines:"
+echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
+echo "        --command='sudo journalctl -u manike-api.service -n 200 --no-pager'"
+echo ""
+echo "    # Errors only:"
+echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
+echo "        --command='sudo journalctl -u manike-api.service -p err --no-pager'"
+echo ""
+echo "    # Service status:"
+echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
+echo "        --command='sudo systemctl status manike-api.service'"
+echo ""
+echo "── PostgreSQL ──────────────────────────────────────────────────"
+echo ""
+echo "    # Open psql shell (run from manike-app, which has network access):"
+echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
+echo "        --command='sudo -u manike /home/manike/menike_backend_poc/.venv/bin/python3 -c \""
+echo "import psycopg2, os; from dotenv import load_dotenv; load_dotenv(\"/home/manike/menike_backend_poc/.env\")"
+echo "conn = psycopg2.connect(os.environ[\\\"DATABASE_URL\\\"]); print(\\\"Connected:\\\", conn.get_dsn_parameters())"
+echo "\"'"
+echo ""
+echo "    # Or install psql on the app VM and connect directly:"
+echo "    gcloud compute ssh manike-app --zone=$ZONE --command='"
+echo "      sudo apt-get install -y postgresql-client &&"
+echo "      source /home/manike/menike_backend_poc/.env &&"
+echo "      psql \"\$DATABASE_URL\""
+echo "    '"
+echo ""
+echo "    # PostgreSQL container logs:"
+echo "    gcloud compute ssh manike-postgres --zone=$ZONE --tunnel-through-iap \\"
+echo "        --command='sudo docker logs \$(sudo docker ps -qf name=postgres) --tail=100 -f'"
+echo ""
+echo "── Milvus ──────────────────────────────────────────────────────"
+echo ""
+echo "    # Milvus container logs:"
+echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap \\"
+echo "        --command='sudo docker logs \$(sudo docker ps -qf name=milvus) --tail=100 -f'"
+echo ""
+echo "    # Check all Milvus stack container statuses:"
+echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap \\"
+echo "        --command='sudo docker compose -f /opt/manike/docker-compose.yml ps'"
+echo ""
+echo "    # Connect to Milvus via Python (run from manike-app):"
+echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
+echo "        --command='sudo -u manike /home/manike/menike_backend_poc/.venv/bin/python3 -c \""
+echo "from pymilvus import connections, utility"
+echo "from dotenv import load_dotenv; import os; load_dotenv(\"/home/manike/menike_backend_poc/.env\")"
+echo "connections.connect(host=os.environ[\\\"MILVUS_HOST\\\"], port=os.environ[\\\"MILVUS_PORT\\\"])"
+echo "print(\\\"Collections:\\\", utility.list_collections())"
+echo "\"'"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

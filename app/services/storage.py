@@ -4,6 +4,7 @@ from datetime import timedelta
 import google.auth
 import google.auth.transport.requests
 from google.cloud import storage
+from google.auth import impersonated_credentials
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,6 +18,18 @@ class StorageService:
         self.base_prefix = os.getenv("GCS_BASE_PREFIX", "experience-images").strip("/")
         self.signed_url_expiry_minutes = int(os.getenv("GCS_SIGNED_URL_EXPIRY_MINUTES", "60"))
         self.credentials, _ = google.auth.default()
+        # When running on GCE with Compute Engine credentials, wrap them with
+        # impersonated_credentials so that generate_signed_url can use the
+        # IAM signBlob API instead of a local private key.
+        service_account_email = os.getenv("GCS_SIGNING_SA_EMAIL")
+        if service_account_email:
+            self.signing_credentials = impersonated_credentials.Credentials(
+                source_credentials=self.credentials,
+                target_principal=service_account_email,
+                target_scopes=["https://www.googleapis.com/auth/devstorage.read_only"],
+            )
+        else:
+            self.signing_credentials = self.credentials
         self.client = storage.Client(credentials=self.credentials)
         self.bucket = self.client.bucket(self.bucket_name)
 
@@ -27,7 +40,6 @@ class StorageService:
         return cleaned_path
 
     def _signed_url(self, key: str) -> str:
-        # Refresh credentials so the token is valid for signing
         auth_req = google.auth.transport.requests.Request()
         self.credentials.refresh(auth_req)
         blob = self.bucket.blob(key)
@@ -35,7 +47,7 @@ class StorageService:
             expiration=timedelta(minutes=self.signed_url_expiry_minutes),
             method="GET",
             version="v4",
-            credentials=self.credentials,
+            credentials=self.signing_credentials,
         )
 
     def upload_file(self, local_path: str, remote_path: str) -> str:
