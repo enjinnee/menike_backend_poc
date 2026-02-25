@@ -702,10 +702,7 @@ function addCompileVideoButton(itineraryId) {
     btn.onclick = () => {
         btn.disabled = true;
         btn.textContent = 'Compiling...';
-        compileAndShowVideo(itineraryId).catch(() => {}).finally(() => {
-            btn.disabled = false;
-            btn.textContent = '🎬 Accept Itinerary & Create Video';
-        });
+        compileAndShowVideo(itineraryId, btn);
     };
 
     const content = document.createElement('div');
@@ -718,7 +715,10 @@ function addCompileVideoButton(itineraryId) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-async function compileAndShowVideo(itineraryId) {
+async function compileAndShowVideo(itineraryId, btn) {
+    const resetBtn = () => {
+        if (btn) { btn.disabled = false; btn.textContent = '🎬 Accept Itinerary & Create Video'; }
+    };
     // Show a live elapsed timer while the server compiles
     const timerDiv = document.createElement('div');
     timerDiv.className = 'message assistant-message';
@@ -748,7 +748,8 @@ async function compileAndShowVideo(itineraryId) {
             } else {
                 addMessageToChat('assistant', `⚠️ Could not compile video: ${err.detail || 'Unknown error'}. You can still view your itinerary above.`);
             }
-            throw new Error('compile failed');
+            resetBtn();
+            return;
         }
 
         const data = await res.json();
@@ -762,16 +763,15 @@ async function compileAndShowVideo(itineraryId) {
             addMessageToChat('assistant', `✅ Your cinematic video is ready! (compiled in ${elapsed}s) See the player at the bottom.`);
         } else {
             addMessageToChat('assistant', 'ℹ️ No cinematic clips were matched for this itinerary — video unavailable.');
-            throw new Error('no video');
+            resetBtn();
         }
     } catch (e) {
         clearInterval(timerInterval);
         const timerMsg = document.getElementById('compileTimerMessage');
         if (timerMsg) timerMsg.remove();
         console.error('Video compile error:', e);
-        if (e.message !== 'compile failed' && e.message !== 'no video') {
-            addMessageToChat('assistant', '⚠️ Could not compile video. You can still view your itinerary above.');
-        }
+        addMessageToChat('assistant', '⚠️ Could not compile video. You can still view your itinerary above.');
+        resetBtn();
     }
 }
 
