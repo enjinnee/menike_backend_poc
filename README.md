@@ -365,7 +365,9 @@ The script will:
 | `--bucket` | `manike-ai-media` | GCS bucket name |
 | `--repo-url` | — | Git repo URL (for git mode) |
 | `--repo-branch` | `main` | Git branch |
-| `--deploy-method` | `git` | `git` or `scp` |
+| `--deploy-method` | `scp` | `git` or `scp` |
+| `--redeploy` | — | Push code to existing VM and restart (no infrastructure changes) |
+| `--teardown` | — | Destroy all VMs, IPs, firewall rules, NAT, SA (bucket preserved) |
 
 ### Setting Up the Cloud Run Video Compiler
 
@@ -398,63 +400,139 @@ EOF"
 '
 ```
 
+### Redeploying After Code Changes (deploy-gcp.sh --redeploy)
+
+The `--redeploy` flag handles everything in one command:
+
+```bash
+./deploy/deploy-gcp.sh \
+    --project manike-ai-staging \
+    --gemini-key YOUR_GEMINI_KEY \
+    --redeploy
+```
+
+It will: tarball local code → SCP to VM → extract (preserving `.env`) → `pip install` → run migrations → restart the service.
+
+### Tearing Down and Recreating the Environment
+
+```bash
+# Destroy all VMs, IPs, firewall rules, NAT, SA (bucket is preserved)
+./deploy/deploy-gcp.sh --project manike-ai-staging --teardown
+
+# Recreate from scratch on a new project
+./deploy/deploy-gcp.sh \
+    --project YOUR_NEW_PROJECT_ID \
+    --gemini-key YOUR_GEMINI_KEY
+```
+
+---
+
+## Accessing Milvus and PostgreSQL Locally
+
+Both databases are on **internal-only VMs** (no public IP). Access them locally by opening an SSH tunnel through the `manike-app` VM, which has network access to both.
+
+### Milvus — Attu GUI (visual browser)
+
+[Attu](https://github.com/zilliztech/attu) is the official Milvus web UI. Run it locally via Docker:
+
+**Step 1 — Open an SSH tunnel to Milvus (keep this terminal open):**
+```bash
+gcloud compute ssh manike-app \
+    --zone=us-central1-a \
+    --project=manike-ai-staging \
+    -- -L 19530:10.128.0.3:19530 -N
+```
+
+**Step 2 — Launch Attu in a second terminal:**
+```bash
+docker run -d --rm \
+    -p 8080:3000 \
+    -e MILVUS_URL=host.docker.internal:19530 \
+    zilliz/attu:latest
+```
+
+**Step 3 — Open Attu in your browser:**
+```
+http://localhost:8080
+```
+Connect with `host.docker.internal:19530` (pre-filled). You can browse collections, inspect entities, run queries, and view index stats.
+
+**Querying Milvus via Python locally:**
+```python
+from pymilvus import connections, Collection, utility
+
+connections.connect(host="localhost", port=19530)  # tunnel must be open
+
+print(utility.list_collections())
+
+coll = Collection("image_vectors")
+coll.load()
+results = coll.query(expr='id != ""', output_fields=["id", "metadata"], limit=10)
+for r in results:
+    print(r)
+```
+
+---
+
+### PostgreSQL — pgAdmin or psql
+
+**Step 1 — Open an SSH tunnel to PostgreSQL (keep this terminal open):**
+```bash
+gcloud compute ssh manike-app \
+    --zone=us-central1-a \
+    --project=manike-ai-staging \
+    -- -L 5432:10.128.0.2:5432 -N
+```
+
+**Step 2 — Connect with psql:**
+```bash
+psql "postgresql://manike:manike_secret@localhost:5432/manike_db"
+```
+
+**Step 3 — Or connect with pgAdmin:**
+
+Open pgAdmin → Add New Server:
+
+| Field | Value |
+|-------|-------|
+| Host | `localhost` |
+| Port | `5432` |
+| Database | `manike_db` |
+| Username | `manike` |
+| Password | `manike_secret` |
+
+**Useful queries:**
+```sql
+-- All tenants
+SELECT id, name FROM tenant;
+
+-- All uploaded images
+SELECT name, location, image_url FROM image_library ORDER BY created_at DESC;
+
+-- All cinematic clips
+SELECT name, location, video_url, duration FROM cinematic_clip ORDER BY created_at DESC;
+
+-- Generated itineraries
+SELECT destination, days, status, created_at FROM itinerary ORDER BY created_at DESC;
+
+-- Activity-to-clip mapping for a given itinerary
+SELECT day, activity_name, location, cinematic_clip_url
+FROM itinerary_activity
+WHERE itinerary_id = 'YOUR_ITINERARY_ID'
+ORDER BY day, order_index;
+
+-- Final compiled videos
+SELECT fv.video_url, i.destination, fv.status, fv.created_at
+FROM final_video fv
+JOIN itinerary i ON i.id = fv.itinerary_id
+ORDER BY fv.created_at DESC;
+```
+
+---
+
 ### Redeploying After Code Changes
 
-After making changes to the backend code locally, redeploy to GCP:
-
-```bash
-# 1. Create a fresh tarball (excluding venv, git, env)
-tar czf /tmp/menike_backend_poc.tar.gz \
-    --exclude='.venv' --exclude='.git' --exclude='.env' --exclude='__pycache__' \
-    menike_backend_poc
-
-# 2. Upload to the app VM
-gcloud compute scp /tmp/menike_backend_poc.tar.gz manike-app:/tmp/ --zone=us-central1-a
-
-# 3. Extract and restart (preserves existing .env)
-gcloud compute ssh manike-app --zone=us-central1-a --command='
-  sudo bash -c "
-    # Backup .env
-    cp /home/manike/menike_backend_poc/.env /tmp/manike-env-backup
-
-    # Extract new code
-    tar xzf /tmp/menike_backend_poc.tar.gz -C /home/manike/
-    chown -R manike:manike /home/manike/menike_backend_poc
-
-    # Restore .env
-    cp /tmp/manike-env-backup /home/manike/menike_backend_poc/.env
-    chown manike:manike /home/manike/menike_backend_poc/.env
-    chmod 600 /home/manike/menike_backend_poc/.env
-
-    # Reinstall deps (in case requirements.txt changed)
-    cd /home/manike/menike_backend_poc
-    sudo -u manike .venv/bin/pip install -r requirements.txt 2>&1 | tail -3
-
-    # Restart the service
-    systemctl restart manike-api
-    sleep 2
-    systemctl status manike-api --no-pager | head -8
-  "
-'
-```
-
-**If you only changed Python code** (no new dependencies):
-```bash
-# Quick redeploy: upload and restart (skip pip install)
-gcloud compute scp /tmp/menike_backend_poc.tar.gz manike-app:/tmp/ --zone=us-central1-a
-
-gcloud compute ssh manike-app --zone=us-central1-a --command='
-  sudo bash -c "
-    cp /home/manike/menike_backend_poc/.env /tmp/manike-env-backup
-    tar xzf /tmp/menike_backend_poc.tar.gz -C /home/manike/
-    chown -R manike:manike /home/manike/menike_backend_poc
-    cp /tmp/manike-env-backup /home/manike/menike_backend_poc/.env
-    chown manike:manike /home/manike/menike_backend_poc/.env
-    chmod 600 /home/manike/menike_backend_poc/.env
-    systemctl restart manike-api
-  "
-'
-```
+Use the `--redeploy` flag — it handles tarball, upload, extract, pip install, migrations, and service restart automatically. See [Redeploying After Code Changes (deploy-gcp.sh --redeploy)](#redeploying-after-code-changes-deploy-gcpsh---redeploy) above.
 
 **If you changed the Cloud Run Job worker** (deploy/cloud-run-job/):
 ```bash

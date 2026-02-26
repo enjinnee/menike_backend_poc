@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 #
-# deploy-gcp.sh — Provision 3 GCE VMs for the Manike AI backend.
+# deploy-gcp.sh — Full lifecycle management for the Manike AI backend on GCP.
+#
+# MODES
+#   (default)    Fresh deploy — provision all VMs, bucket, SA, and start the API.
+#                Idempotent: skips resources that already exist.
+#   --redeploy   Push updated code to an existing manike-app VM and restart.
+#                Does NOT touch PostgreSQL, Milvus, or the bucket.
+#   --teardown   Destroy all VMs, static IP, firewall rules, NAT, router, and SA.
+#                Does NOT delete the GCS bucket (data is preserved).
 #
 # Usage:
 #   ./deploy/deploy-gcp.sh \
@@ -10,19 +18,18 @@
 #       [--postgres-password YOUR_PG_PASSWORD] \
 #       [--zone us-central1-a] \
 #       [--bucket manike-ai-media] \
-#       [--signed-url-expiry 60] \
 #       [--deploy-method git|scp] \
 #       [--repo-url REPO_URL] \
-#       [--repo-branch BRANCH]
+#       [--repo-branch BRANCH] \
+#       [--redeploy] \
+#       [--teardown]
 #
 # Prerequisites:
 #   - gcloud CLI authenticated (gcloud auth login && gcloud auth application-default login)
 #   - Billing enabled on the GCP project
+#   - roles/orgpolicy.policyAdmin granted on the org (for allUsers bucket access)
 #
-# Signed URL approach: keyless via IAM signBlob API.
-# The app VM runs as manike-app-sa, which is granted
-# roles/iam.serviceAccountTokenCreator on manike-storage-sa.
-# No key file is ever created or stored on disk.
+# GCS bucket is publicly readable; writes require service account credentials.
 #
 
 set -euo pipefail
@@ -37,24 +44,24 @@ GEMINI_KEY=""
 PROJECT=""
 REPO_URL="https://github.com/YOUR_ORG/menike_backend_poc.git"
 REPO_BRANCH="main"
-DEPLOY_METHOD="git"   # "git" or "scp"
-SIGNED_URL_EXPIRY=60
-SA_NAME="manike-storage"
+DEPLOY_METHOD="scp"   # "git" or "scp"
 APP_SA_NAME="manike-app"
+MODE="deploy"         # deploy | redeploy | teardown
 
 # ──────────────────────────── Parse args ──────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --project)          PROJECT="$2";          shift 2 ;;
-        --gemini-key)       GEMINI_KEY="$2";       shift 2 ;;
-        --secret-key)       SECRET_KEY="$2";       shift 2 ;;
-        --postgres-password) PG_PASSWORD="$2";     shift 2 ;;
-        --zone)             ZONE="$2";             shift 2 ;;
-        --bucket)           BUCKET="$2";           shift 2 ;;
-        --repo-url)         REPO_URL="$2";         shift 2 ;;
-        --repo-branch)      REPO_BRANCH="$2";      shift 2 ;;
-        --deploy-method)    DEPLOY_METHOD="$2";    shift 2 ;;
-        --signed-url-expiry) SIGNED_URL_EXPIRY="$2"; shift 2 ;;
+        --project)           PROJECT="$2";       shift 2 ;;
+        --gemini-key)        GEMINI_KEY="$2";    shift 2 ;;
+        --secret-key)        SECRET_KEY="$2";    shift 2 ;;
+        --postgres-password) PG_PASSWORD="$2";   shift 2 ;;
+        --zone)              ZONE="$2";          shift 2 ;;
+        --bucket)            BUCKET="$2";        shift 2 ;;
+        --repo-url)          REPO_URL="$2";      shift 2 ;;
+        --repo-branch)       REPO_BRANCH="$2";   shift 2 ;;
+        --deploy-method)     DEPLOY_METHOD="$2"; shift 2 ;;
+        --redeploy)          MODE="redeploy";    shift ;;
+        --teardown)          MODE="teardown";    shift ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -65,13 +72,116 @@ if [[ -z "$PROJECT" ]]; then
 fi
 
 REGION="${ZONE%-*}"
-
-echo "==> Deploying Manike AI to GCP project: $PROJECT (zone: $ZONE)"
 gcloud config set project "$PROJECT"
 
+# ════════════════════════════════════════════════════════════════════
+# TEARDOWN
+# ════════════════════════════════════════════════════════════════════
+if [[ "$MODE" == "teardown" ]]; then
+    echo "==> TEARDOWN: removing all Manike AI resources from project $PROJECT"
+    echo "    (GCS bucket gs://$BUCKET is preserved)"
+    echo ""
+
+    echo "── Deleting VMs..."
+    gcloud compute instances delete manike-app manike-postgres manike-milvus \
+        --zone="$ZONE" --quiet 2>/dev/null || echo "    (some VMs already deleted)"
+
+    echo "── Releasing static IP..."
+    gcloud compute addresses delete manike-app-ip \
+        --region="$REGION" --quiet 2>/dev/null || echo "    (static IP already deleted)"
+
+    echo "── Deleting firewall rules..."
+    gcloud compute firewall-rules delete allow-manike-app allow-manike-db allow-manike-milvus \
+        --quiet 2>/dev/null || echo "    (some firewall rules already deleted)"
+
+    echo "── Deleting Cloud NAT and router..."
+    gcloud compute routers nats delete manike-nat \
+        --router=manike-router --region="$REGION" --quiet 2>/dev/null || true
+    gcloud compute routers delete manike-router \
+        --region="$REGION" --quiet 2>/dev/null || echo "    (router already deleted)"
+
+    echo "── Deleting service account..."
+    gcloud iam service-accounts delete \
+        "${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
+        --quiet 2>/dev/null || echo "    (service account already deleted)"
+
+    echo ""
+    echo "==> Teardown complete."
+    echo "    Bucket gs://$BUCKET was NOT deleted. Remove manually if needed:"
+    echo "    gsutil rm -r gs://$BUCKET"
+    exit 0
+fi
+
+# ════════════════════════════════════════════════════════════════════
+# REDEPLOY — push updated code to the existing app VM
+# ════════════════════════════════════════════════════════════════════
+if [[ "$MODE" == "redeploy" ]]; then
+    echo "==> REDEPLOY: updating manike-app in project $PROJECT (zone: $ZONE)"
+
+    # Verify VM exists
+    if ! gcloud compute instances describe manike-app --zone="$ZONE" &>/dev/null; then
+        echo "Error: manike-app VM not found. Run a full deploy first."
+        exit 1
+    fi
+
+    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+    echo "── Uploading code..."
+    tar czf /tmp/menike_backend_poc_redeploy.tar.gz \
+        --exclude='.venv' --exclude='.git' --exclude='.env' \
+        --exclude='__pycache__' --exclude='*.pyc' \
+        -C "$(dirname "$REPO_ROOT")" "$(basename "$REPO_ROOT")"
+
+    gcloud compute scp /tmp/menike_backend_poc_redeploy.tar.gz \
+        manike-app:/tmp/ --zone="$ZONE"
+    rm -f /tmp/menike_backend_poc_redeploy.tar.gz
+
+    echo "── Deploying on VM..."
+    gcloud compute ssh manike-app --zone="$ZONE" --command='
+        set -e
+        sudo tar xzf /tmp/menike_backend_poc_redeploy.tar.gz \
+            -C /home/manike/ \
+            --exclude="menike_backend_poc/.env" \
+            --strip-components=0
+        sudo chown -R manike:manike /home/manike/menike_backend_poc
+        rm -f /tmp/menike_backend_poc_redeploy.tar.gz
+
+        cd /home/manike/menike_backend_poc
+
+        # Re-install dependencies in case requirements changed
+        sudo -u manike .venv/bin/pip install -q --upgrade pip
+        sudo -u manike .venv/bin/pip install -q -r requirements.txt
+
+        # Run any DB/data migrations
+        sudo -u manike .venv/bin/python3 seed_db.py || echo "seed_db.py failed (non-fatal)"
+        sudo -u manike .venv/bin/python3 migrate_to_public_urls.py || echo "migrate failed (non-fatal)"
+
+        # Reload service file in case it changed
+        sudo cp deploy/manike-api.service /etc/systemd/system/manike-api.service
+        sudo systemctl daemon-reload
+        sudo systemctl restart manike-api
+        sleep 2
+        sudo systemctl status manike-api --no-pager
+    '
+
+    STATIC_IP=$(gcloud compute addresses describe manike-app-ip \
+        --region="$REGION" --format='get(address)' 2>/dev/null || \
+        gcloud compute instances describe manike-app \
+            --zone="$ZONE" --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
+
+    echo ""
+    echo "==> Redeploy complete!"
+    echo "    API: http://$STATIC_IP:8000"
+    echo "    Swagger: http://$STATIC_IP:8000/docs"
+    exit 0
+fi
+
+# ════════════════════════════════════════════════════════════════════
+# FRESH DEPLOY (idempotent)
+# ════════════════════════════════════════════════════════════════════
+echo "==> Deploying Manike AI to GCP project: $PROJECT (zone: $ZONE)"
+
 # ──────────────────────── Cloud NAT ─────────────────────────────
-# Internal-only VMs (PostgreSQL, Milvus) need NAT for internet access
-# to download Docker images during startup.
 echo "==> Setting up Cloud NAT for internal VMs..."
 
 gcloud compute routers create manike-router \
@@ -112,8 +222,6 @@ gcloud compute firewall-rules create allow-manike-milvus \
     2>/dev/null || echo "    (firewall rule allow-manike-milvus already exists)"
 
 # ──────────────────────── Docker install helper ─────────────────
-# Ubuntu 22.04 on GCE doesn't ship docker.io; we install Docker CE
-# from the official Docker repo via a shared startup-script snippet.
 DOCKER_INSTALL_SNIPPET='
 apt-get update -y
 apt-get install -y ca-certificates curl gnupg
@@ -131,8 +239,11 @@ systemctl enable docker && systemctl start docker
 # ──────────────────────── VM1: PostgreSQL ─────────────────────────
 echo "==> Creating VM1 (PostgreSQL)..."
 
-PG_STARTUP=$(mktemp)
-cat > "$PG_STARTUP" <<PGSCRIPT
+if gcloud compute instances describe manike-postgres --zone="$ZONE" &>/dev/null; then
+    echo "    (manike-postgres already exists, skipping)"
+else
+    PG_STARTUP=$(mktemp)
+    cat > "$PG_STARTUP" <<PGSCRIPT
 #!/bin/bash
 set -e
 ${DOCKER_INSTALL_SNIPPET}
@@ -159,23 +270,27 @@ cd /opt/manike && docker compose up -d
 echo 'PostgreSQL is running' > /dev/ttyS0
 PGSCRIPT
 
-gcloud compute instances create manike-postgres \
-    --zone="$ZONE" \
-    --machine-type=e2-micro \
-    --no-address \
-    --tags=db-server \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --boot-disk-size=20GB \
-    --metadata-from-file=startup-script="$PG_STARTUP"
+    gcloud compute instances create manike-postgres \
+        --zone="$ZONE" \
+        --machine-type=e2-micro \
+        --no-address \
+        --tags=db-server \
+        --image-family=ubuntu-2204-lts \
+        --image-project=ubuntu-os-cloud \
+        --boot-disk-size=20GB \
+        --metadata-from-file=startup-script="$PG_STARTUP"
 
-rm -f "$PG_STARTUP"
+    rm -f "$PG_STARTUP"
+fi
 
 # ──────────────────────── VM2: Milvus ─────────────────────────────
 echo "==> Creating VM2 (Milvus)..."
 
-MILVUS_STARTUP=$(mktemp)
-cat > "$MILVUS_STARTUP" <<MILVSCRIPT
+if gcloud compute instances describe manike-milvus --zone="$ZONE" &>/dev/null; then
+    echo "    (manike-milvus already exists, skipping)"
+else
+    MILVUS_STARTUP=$(mktemp)
+    cat > "$MILVUS_STARTUP" <<MILVSCRIPT
 #!/bin/bash
 set -e
 ${DOCKER_INSTALL_SNIPPET}
@@ -255,17 +370,18 @@ cd /opt/manike && docker compose up -d
 echo "Milvus is running" > /dev/ttyS0
 MILVSCRIPT
 
-gcloud compute instances create manike-milvus \
-    --zone="$ZONE" \
-    --machine-type=e2-small \
-    --no-address \
-    --tags=vector-server \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --boot-disk-size=30GB \
-    --metadata-from-file=startup-script="$MILVUS_STARTUP"
+    gcloud compute instances create manike-milvus \
+        --zone="$ZONE" \
+        --machine-type=e2-small \
+        --no-address \
+        --tags=vector-server \
+        --image-family=ubuntu-2204-lts \
+        --image-project=ubuntu-os-cloud \
+        --boot-disk-size=30GB \
+        --metadata-from-file=startup-script="$MILVUS_STARTUP"
 
-rm -f "$MILVUS_STARTUP"
+    rm -f "$MILVUS_STARTUP"
+fi
 
 # ──────────────────────── GCS Bucket ──────────────────────────────
 echo "==> Creating GCS bucket: gs://$BUCKET"
@@ -273,41 +389,34 @@ echo "==> Creating GCS bucket: gs://$BUCKET"
 gsutil mb -l "$REGION" "gs://$BUCKET" 2>/dev/null \
     || echo "    (bucket gs://$BUCKET already exists)"
 
-# ──────────────── Service Accounts (keyless signed URLs) ──────────
-# Two SAs:
-#   manike-storage-sa  — owns the GCS bucket, used as the signing identity
-#   manike-app-sa      — attached to the app VM, impersonates manike-storage-sa
-#                        via IAM signBlob (no key file ever created)
-echo "==> Creating service accounts..."
-
-gcloud iam service-accounts create "$SA_NAME" \
-    --display-name="Manike Storage SA (signing identity)" \
-    --project="$PROJECT" \
-    2>/dev/null || echo "    (service account $SA_NAME already exists)"
+# ──────────────── Service Account ────────────────────────────────
+echo "==> Creating service account..."
 
 gcloud iam service-accounts create "$APP_SA_NAME" \
     --display-name="Manike App SA (attached to VM)" \
     --project="$PROJECT" \
     2>/dev/null || echo "    (service account $APP_SA_NAME already exists)"
 
-# Grant the storage SA objectAdmin on the bucket
-gsutil iam ch \
-    "serviceAccount:${SA_NAME}@${PROJECT}.iam.gserviceaccount.com:objectAdmin" \
-    "gs://$BUCKET"
+# ──────────────── Org policy override — allow allUsers on bucket ──
+echo "==> Allowing public bucket access (org policy override at project level)..."
+gcloud resource-manager org-policies set-policy \
+    --project="$PROJECT" \
+    /dev/stdin <<'ORGEOF' 2>/dev/null || echo "    (org policy override skipped — may need orgpolicy.policyAdmin)"
+constraint: constraints/iam.allowedPolicyMemberDomains
+restoreDefault: {}
+ORGEOF
 
-# Grant the app VM SA objectAdmin on the bucket for direct uploads
+# Make bucket publicly readable using gcloud storage (works even when gsutil is blocked)
+echo "==> Granting public read access to bucket..."
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
+    --member=allUsers \
+    --role=roles/storage.objectViewer \
+    2>/dev/null || echo "    (allUsers objectViewer may already be set or blocked by org policy)"
+
+# Grant the app VM SA objectAdmin on the bucket for uploads/deletes
 gsutil iam ch \
     "serviceAccount:${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com:objectAdmin" \
     "gs://$BUCKET"
-
-# Allow the app VM SA to impersonate the storage SA for signBlob calls
-gcloud iam service-accounts add-iam-policy-binding \
-    "${SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
-    --member="serviceAccount:${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
-    --role="roles/iam.serviceAccountTokenCreator" \
-    --project="$PROJECT"
-
-echo "    Keyless signing configured — no key file created."
 
 # ──────────────── Wait for internal IPs ───────────────────────────
 echo "==> Waiting for VM internal IPs..."
@@ -336,128 +445,108 @@ echo "    Static IP: $STATIC_IP"
 # ──────────────────────── VM3: App Server ─────────────────────────
 echo "==> Creating VM3 (App Server)..."
 
-gcloud compute instances create manike-app \
-    --zone="$ZONE" \
-    --machine-type=e2-micro \
-    --address="$STATIC_IP" \
-    --tags=app-server \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
-    --boot-disk-size=20GB \
-    --service-account="${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
-    --scopes=cloud-platform \
-    --metadata=startup-script="#!/bin/bash
+if gcloud compute instances describe manike-app --zone="$ZONE" &>/dev/null; then
+    echo "    (manike-app already exists — use --redeploy to update code)"
+else
+    gcloud compute instances create manike-app \
+        --zone="$ZONE" \
+        --machine-type=e2-micro \
+        --address="$STATIC_IP" \
+        --tags=app-server \
+        --image-family=ubuntu-2204-lts \
+        --image-project=ubuntu-os-cloud \
+        --boot-disk-size=20GB \
+        --service-account="${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com" \
+        --scopes=cloud-platform \
+        --metadata=startup-script="#!/bin/bash
 set -e
 
-# Print current external IP to serial console for easy retrieval
 EXTERNAL_IP=\$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
 echo \"Manike API available at: http://\${EXTERNAL_IP}:8000\" > /dev/ttyS0
-echo \"Manike API IP: \${EXTERNAL_IP}\" > /dev/ttyS0
 
-# Install system deps
 apt-get update -y
 apt-get install -y python3 python3-pip python3-venv ffmpeg git
-
-# Create app user
 useradd -m -s /bin/bash manike 2>/dev/null || true
 
 DEPLOY_METHOD=${DEPLOY_METHOD}
 
 if [ \"\${DEPLOY_METHOD}\" = 'scp' ]; then
-    # SCP mode: create directory structure, write .env.
-    # Code will be uploaded via 'gcloud compute scp' after VM boots.
     mkdir -p /home/manike/menike_backend_poc
     chown manike:manike /home/manike/menike_backend_poc
-
     cat > /home/manike/menike_backend_poc/.env <<ENVEOF
 DATABASE_URL=postgresql://manike:${PG_PASSWORD}@${PG_IP}:5432/manike_db
 MILVUS_HOST=${MILVUS_IP}
 MILVUS_PORT=19530
 GCS_BUCKET_NAME=${BUCKET}
 GCS_BASE_PREFIX=experience-images
-GCS_SIGNED_URL_EXPIRY_MINUTES=${SIGNED_URL_EXPIRY}
-GCS_SIGNING_SA_EMAIL=${SA_NAME}@${PROJECT}.iam.gserviceaccount.com
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
 ENVEOF
     chown manike:manike /home/manike/menike_backend_poc/.env
     chmod 600 /home/manike/menike_backend_poc/.env
-
-    echo 'VM ready for SCP upload. Run: gcloud compute scp ...' > /dev/ttyS0
+    echo 'VM ready for SCP upload' > /dev/ttyS0
 else
-    # Git mode: clone repo and set up everything
     cd /home/manike
     if [ ! -d menike_backend_poc ]; then
         sudo -u manike git clone --branch $REPO_BRANCH $REPO_URL menike_backend_poc
     fi
     cd menike_backend_poc
-
-    # Python venv
     sudo -u manike python3 -m venv .venv
     sudo -u manike .venv/bin/pip install --upgrade pip
     sudo -u manike .venv/bin/pip install -r requirements.txt
-
-    # Write .env
     cat > .env <<ENVEOF
 DATABASE_URL=postgresql://manike:${PG_PASSWORD}@${PG_IP}:5432/manike_db
 MILVUS_HOST=${MILVUS_IP}
 MILVUS_PORT=19530
 GCS_BUCKET_NAME=${BUCKET}
 GCS_BASE_PREFIX=experience-images
-GCS_SIGNED_URL_EXPIRY_MINUTES=${SIGNED_URL_EXPIRY}
-GCS_SIGNING_SA_EMAIL=${SA_NAME}@${PROJECT}.iam.gserviceaccount.com
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
 ENVEOF
     chown manike:manike .env
     chmod 600 .env
-
-    # Seed database (wait for Postgres to be ready)
     echo 'Waiting for PostgreSQL...'
     for i in \$(seq 1 30); do
         if sudo -u manike .venv/bin/python3 -c \"
 import psycopg2
 psycopg2.connect('postgresql://manike:${PG_PASSWORD}@${PG_IP}:5432/manike_db')
-print('connected')
-\" 2>/dev/null; then
-            break
-        fi
+\" 2>/dev/null; then break; fi
         sleep 5
     done
-
-    sudo -u manike .venv/bin/python3 seed_db.py || echo 'seed_db.py failed (may need manual run)'
-
-    # Install systemd service
+    sudo -u manike .venv/bin/python3 seed_db.py || echo 'seed_db.py failed'
+    sudo -u manike .venv/bin/python3 migrate_to_public_urls.py || echo 'migrate failed'
     cp deploy/manike-api.service /etc/systemd/system/manike-api.service
     systemctl daemon-reload
     systemctl enable manike-api
     systemctl start manike-api
-
     echo 'Manike API service started' > /dev/ttyS0
 fi
 "
+fi
 
 # ──────────────────────── Done ────────────────────────────────────
 echo ""
-echo "==> Deployment initiated! VMs are booting and running startup scripts."
+echo "==> Deployment complete!"
 echo ""
 echo "    VM1 (PostgreSQL): manike-postgres  (internal: $PG_IP)"
 echo "    VM2 (Milvus):     manike-milvus    (internal: $MILVUS_IP)"
-echo "    VM3 (App):        manike-app       (public, static IP: $STATIC_IP)"
+echo "    VM3 (App):        manike-app       (public: $STATIC_IP)"
 echo ""
 
 if [[ "$DEPLOY_METHOD" == "scp" ]]; then
-    echo "==> DEPLOY_METHOD=scp: Upload code to the VM after startup (~2 min):"
+    echo "==> DEPLOY_METHOD=scp — upload code then run --redeploy:"
     echo ""
-    echo "    # 1. Create tarball (from repo root):"
-    echo "    tar czf /tmp/menike_backend_poc.tar.gz --exclude='.venv' --exclude='.git' --exclude='.env' menike_backend_poc"
-    echo ""
-    echo "    # 2. Upload to VM:"
+    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+    echo "    # From the repo root (menike_backend_poc/):"
+    echo "    cd $(dirname "$REPO_ROOT")"
+    echo "    tar czf /tmp/menike_backend_poc.tar.gz \\"
+    echo "        --exclude='menike_backend_poc/.venv' \\"
+    echo "        --exclude='menike_backend_poc/.git' \\"
+    echo "        --exclude='menike_backend_poc/.env' \\"
+    echo "        menike_backend_poc"
     echo "    gcloud compute scp /tmp/menike_backend_poc.tar.gz manike-app:/tmp/ --zone=$ZONE"
-    echo ""
-    echo "    # 3. SSH in and set up:"
     echo "    gcloud compute ssh manike-app --zone=$ZONE --command='"
     echo "      sudo tar xzf /tmp/menike_backend_poc.tar.gz -C /home/manike/"
     echo "      sudo chown -R manike:manike /home/manike/menike_backend_poc"
@@ -466,80 +555,61 @@ if [[ "$DEPLOY_METHOD" == "scp" ]]; then
     echo "      sudo -u manike .venv/bin/pip install --upgrade pip"
     echo "      sudo -u manike .venv/bin/pip install -r requirements.txt"
     echo "      sudo -u manike .venv/bin/python3 seed_db.py"
+    echo "      sudo -u manike .venv/bin/python3 migrate_to_public_urls.py"
     echo "      sudo cp deploy/manike-api.service /etc/systemd/system/"
     echo "      sudo systemctl daemon-reload && sudo systemctl enable manike-api && sudo systemctl start manike-api"
     echo "    '"
     echo ""
+    echo "    # Or just run --redeploy next time:"
+    echo "    ./deploy/deploy-gcp.sh --project $PROJECT --gemini-key \$GEMINI_KEY --redeploy"
+    echo ""
 fi
 
-echo "==> App server will be available at (once startup script completes ~3-5 min):"
-echo ""
+echo "==> API will be ready at (~3-5 min for fresh VMs):"
 echo "    http://$STATIC_IP:8000"
+echo "    http://$STATIC_IP:8000/docs  (Swagger UI)"
 echo ""
-echo "==> SSH into VMs (IAP tunnel for private VMs):"
+echo "==> To redeploy code changes:"
+echo "    ./deploy/deploy-gcp.sh --project $PROJECT --gemini-key \$GEMINI_KEY --redeploy"
+echo ""
+echo "==> To tear down everything:"
+echo "    ./deploy/deploy-gcp.sh --project $PROJECT --teardown"
+echo ""
+echo "==> SSH into VMs:"
 echo "    gcloud compute ssh manike-postgres --zone=$ZONE --tunnel-through-iap"
 echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap"
 echo "    gcloud compute ssh manike-app --zone=$ZONE"
-echo ""
-echo "==> Swagger UI: http://$STATIC_IP:8000/docs"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "==> USEFUL OPERATIONAL COMMANDS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "── App Logs ────────────────────────────────────────────────────"
-echo ""
-echo "    # Tail live logs:"
 echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
 echo "        --command='sudo journalctl -u manike-api.service -f'"
 echo ""
-echo "    # Last 200 lines:"
 echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
 echo "        --command='sudo journalctl -u manike-api.service -n 200 --no-pager'"
 echo ""
-echo "    # Errors only:"
-echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
-echo "        --command='sudo journalctl -u manike-api.service -p err --no-pager'"
-echo ""
-echo "    # Service status:"
 echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
 echo "        --command='sudo systemctl status manike-api.service'"
 echo ""
 echo "── PostgreSQL ──────────────────────────────────────────────────"
-echo ""
-echo "    # Open psql shell (run from manike-app, which has network access):"
-echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
-echo "        --command='sudo -u manike /home/manike/menike_backend_poc/.venv/bin/python3 -c \""
-echo "import psycopg2, os; from dotenv import load_dotenv; load_dotenv(\"/home/manike/menike_backend_poc/.env\")"
-echo "conn = psycopg2.connect(os.environ[\\\"DATABASE_URL\\\"]); print(\\\"Connected:\\\", conn.get_dsn_parameters())"
-echo "\"'"
-echo ""
-echo "    # Or install psql on the app VM and connect directly:"
-echo "    gcloud compute ssh manike-app --zone=$ZONE --command='"
-echo "      sudo apt-get install -y postgresql-client &&"
-echo "      source /home/manike/menike_backend_poc/.env &&"
-echo "      psql \"\$DATABASE_URL\""
-echo "    '"
-echo ""
-echo "    # PostgreSQL container logs:"
 echo "    gcloud compute ssh manike-postgres --zone=$ZONE --tunnel-through-iap \\"
 echo "        --command='sudo docker logs \$(sudo docker ps -qf name=postgres) --tail=100 -f'"
 echo ""
 echo "── Milvus ──────────────────────────────────────────────────────"
-echo ""
-echo "    # Milvus container logs:"
-echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap \\"
-echo "        --command='sudo docker logs \$(sudo docker ps -qf name=milvus) --tail=100 -f'"
-echo ""
-echo "    # Check all Milvus stack container statuses:"
 echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap \\"
 echo "        --command='sudo docker compose -f /opt/manike/docker-compose.yml ps'"
 echo ""
-echo "    # Connect to Milvus via Python (run from manike-app):"
+echo "    gcloud compute ssh manike-milvus --zone=$ZONE --tunnel-through-iap \\"
+echo "        --command='sudo docker logs \$(sudo docker ps -qf name=milvus) --tail=100 -f'"
+echo ""
+echo "── Milvus data (Python) ────────────────────────────────────────"
 echo "    gcloud compute ssh manike-app --zone=$ZONE \\"
-echo "        --command='sudo -u manike /home/manike/menike_backend_poc/.venv/bin/python3 -c \""
-echo "from pymilvus import connections, utility"
-echo "from dotenv import load_dotenv; import os; load_dotenv(\"/home/manike/menike_backend_poc/.env\")"
+echo "        --command='cd /home/manike/menike_backend_poc && sudo -u manike .venv/bin/python3 -c \""
+echo "from dotenv import load_dotenv; load_dotenv(\"/home/manike/menike_backend_poc/.env\")"
+echo "from pymilvus import connections, Collection, utility; import os"
 echo "connections.connect(host=os.environ[\\\"MILVUS_HOST\\\"], port=os.environ[\\\"MILVUS_PORT\\\"])"
 echo "print(\\\"Collections:\\\", utility.list_collections())"
 echo "\"'"
