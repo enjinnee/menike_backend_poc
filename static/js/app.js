@@ -45,7 +45,6 @@ const newChatBtn = document.getElementById('newChatBtn');
 const itineraryPanel = document.getElementById('itineraryPanel');
 const itineraryContent = document.getElementById('itineraryContent');
 const closePanel = document.getElementById('closePanel');
-const exportBtn = document.getElementById('exportBtn');
 const loadingSpinner = document.getElementById('loadingSpinner');
 const headerStatus = document.getElementById('headerStatus');
 const inputContainer = document.getElementById('inputContainer');
@@ -114,7 +113,6 @@ function setupEventListeners() {
 
     newChatBtn.addEventListener('click', startNewChat);
     closePanel.addEventListener('click', closeItineraryPanel);
-    exportBtn.addEventListener('click', exportItinerary);
 
     logoutBtn.addEventListener('click', () => {
         localStorage.removeItem('access_token');
@@ -467,24 +465,24 @@ function generateItinerary() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: currentSessionId })
     })
-    .then(response => response.json())
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(err => { throw new Error(err.detail || `Server error ${response.status}`); });
+        }
+        return response.json();
+    })
     .then(data => {
-        if (data.detail) {
-            alert(`Error: ${data.detail}`);
-            updateHeaderStatus('Generation failed');
-        } else {
+        {
             currentItinerary = data;
             const itineraryToShow = data.rich_itinerary || data;
             displayItinerary(itineraryToShow, data);
             updateHeaderStatus('Itinerary generated successfully!');
-            exportBtn.style.display = 'block';
-
             if (!hasGeneratedItinerary) {
                 hasGeneratedItinerary = true;
                 const panelHint = isMobile()
                     ? 'tap the "View Itinerary" button to see it'
                     : 'view it in the right panel';
-                addMessageToChat('assistant', `✅ Your itinerary has been generated! You can ${panelHint}. Images and cinematic clips have been matched from the media library. Click Export to download as JSON.`);
+                addMessageToChat('assistant', `✅ Your itinerary is ready! You can ${panelHint}. Images and cinematic clips have been matched from the media library.`);
             } else {
                 const updateHint = isMobile()
                     ? 'tap "View Itinerary" to see the latest version'
@@ -492,12 +490,17 @@ function generateItinerary() {
                 addMessageToChat('assistant', `✅ Your itinerary has been updated — ${updateHint}.`);
             }
 
-            if (data.id) addCompileVideoButton(data.id);
+            if (data.id) {
+                // Remove any existing compile button before adding a fresh one
+                const existing = document.getElementById('compileVideoMessage');
+                if (existing) existing.remove();
+                addCompileVideoButton(data.id);
+            }
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        alert('Error generating itinerary. Please try again.');
+        addMessageToChat('assistant', `⚠️ Sorry, something went wrong generating your itinerary. Please try again.`);
         updateHeaderStatus('Generation failed');
     })
     .finally(() => {
@@ -646,7 +649,6 @@ function startNewChat() {
         viewItineraryBtn.classList.remove('visible');
         viewItineraryBtn.style.display = 'none';
     }
-    exportBtn.style.display = 'none';
     currentItinerary = null;
     hasGeneratedItinerary = false;
     pendingRegenerate = false;
@@ -719,60 +721,85 @@ async function compileAndShowVideo(itineraryId, btn) {
     const resetBtn = () => {
         if (btn) { btn.disabled = false; btn.textContent = '🎬 Accept Itinerary & Create Video'; }
     };
-    // Show a live elapsed timer while the server compiles
-    const timerDiv = document.createElement('div');
-    timerDiv.className = 'message assistant-message';
-    timerDiv.id = 'compileTimerMessage';
-    timerDiv.innerHTML = `<div class="message-avatar">🤖</div><div class="message-content" id="compileTimerText">🎬 Compiling your cinematic trip video… 0s</div>`;
-    chatMessages.appendChild(timerDiv);
+
+    // Insert a status message that we'll update in place
+    const statusDiv = document.createElement('div');
+    statusDiv.className = 'message assistant-message';
+    statusDiv.id = 'compileStatusMessage';
+    statusDiv.innerHTML = `<div class="message-avatar">🤖</div><div class="message-content" id="compileStatusText"><span class="compile-spinner"></span> Compiling your cinematic trip video… 0s</div>`;
+    chatMessages.appendChild(statusDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 
     const startTime = Date.now();
-    const timerInterval = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        const el = document.getElementById('compileTimerText');
-        if (el) el.textContent = `🎬 Compiling your cinematic trip video… ${elapsed}s`;
+    const elapsedInterval = setInterval(() => {
+        const el = document.getElementById('compileStatusText');
+        if (el) {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            el.innerHTML = `<span class="compile-spinner"></span> Compiling your cinematic trip video… ${elapsed}s`;
+        }
     }, 1000);
 
+    const removeStatusMsg = () => {
+        clearInterval(elapsedInterval);
+        const msg = document.getElementById('compileStatusMessage');
+        if (msg) msg.remove();
+    };
+
+    // Step 1: kick off compilation
+    let kickoffOk = false;
     try {
         const res = await authFetch(`/itinerary/${itineraryId}/compile-video`, { method: 'POST' });
-
-        clearInterval(timerInterval);
-        const timerMsg = document.getElementById('compileTimerMessage');
-        if (timerMsg) timerMsg.remove();
-
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
+            removeStatusMsg();
             if (res.status === 400) {
                 addMessageToChat('assistant', 'ℹ️ No cinematic clips were matched for this itinerary — video unavailable.');
             } else {
-                addMessageToChat('assistant', `⚠️ Could not compile video: ${err.detail || 'Unknown error'}. You can still view your itinerary above.`);
+                addMessageToChat('assistant', `⚠️ Could not start video compilation: ${err.detail || 'Unknown error'}.`);
             }
             resetBtn();
             return;
         }
+        kickoffOk = true;
+    } catch (e) {
+        removeStatusMsg();
+        console.error('Video compile kickoff error:', e);
+        addMessageToChat('assistant', '⚠️ Could not start video compilation. Please try again.');
+        resetBtn();
+        return;
+    }
 
-        const data = await res.json();
-        const status = data.final_video && data.final_video.status;
-        const videoUrl = data.final_video && data.final_video.video_url;
-        if (status === 'processing') {
-            addMessageToChat('assistant', `⏳ Your video is being compiled in the background. Refresh this page in a minute to see it.`);
-        } else if (videoUrl) {
-            const elapsed = Math.floor((Date.now() - startTime) / 1000);
-            showVideoPlayer(videoUrl);
-            addMessageToChat('assistant', `✅ Your cinematic video is ready! (compiled in ${elapsed}s) See the player at the bottom.`);
-        } else {
-            addMessageToChat('assistant', 'ℹ️ No cinematic clips were matched for this itinerary — video unavailable.');
+    if (!kickoffOk) return;
+
+    // Step 2: poll /video-status until compiled or failed
+    const pollInterval = setInterval(async () => {
+        try {
+            const res = await authFetch(`/itinerary/${itineraryId}/video-status`);
+            const data = await res.json();
+
+            if (data.status === 'compiled' && data.video_url) {
+                clearInterval(pollInterval);
+                removeStatusMsg();
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                showVideoPlayer(data.video_url);
+                addMessageToChat('assistant', `✅ Your cinematic video is ready! (compiled in ${elapsed}s) See the player below — you can download it too.`);
+
+            } else if (data.status === 'failed') {
+                clearInterval(pollInterval);
+                removeStatusMsg();
+                addMessageToChat('assistant', `⚠️ Video compilation failed: ${data.error || 'Unknown error'}. You can still view your itinerary above.`);
+                resetBtn();
+
+            }
+            // else status is "processing" or "not_started" — keep polling
+        } catch (e) {
+            clearInterval(pollInterval);
+            removeStatusMsg();
+            console.error('Video status poll error:', e);
+            addMessageToChat('assistant', '⚠️ Lost contact while checking video status. Please refresh to see if it completed.');
             resetBtn();
         }
-    } catch (e) {
-        clearInterval(timerInterval);
-        const timerMsg = document.getElementById('compileTimerMessage');
-        if (timerMsg) timerMsg.remove();
-        console.error('Video compile error:', e);
-        addMessageToChat('assistant', '⚠️ Could not compile video. You can still view your itinerary above.');
-        resetBtn();
-    }
+    }, 3000);
 }
 
 function showVideoPlayer(url) {

@@ -22,6 +22,7 @@
 #       [--repo-url REPO_URL] \
 #       [--repo-branch BRANCH] \
 #       [--redeploy] \
+#       [--rebuild-worker]   # also rebuild + push the Cloud Run video compiler image \
 #       [--teardown]
 #
 # Prerequisites:
@@ -47,6 +48,7 @@ REPO_BRANCH="main"
 DEPLOY_METHOD="scp"   # "git" or "scp"
 APP_SA_NAME="manike-app"
 MODE="deploy"         # deploy | redeploy | teardown
+REBUILD_WORKER=false  # set via --rebuild-worker to also push a new Cloud Run job image
 
 # ──────────────────────────── Parse args ──────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -62,6 +64,7 @@ while [[ $# -gt 0 ]]; do
         --deploy-method)     DEPLOY_METHOD="$2"; shift 2 ;;
         --redeploy)          MODE="redeploy";    shift ;;
         --teardown)          MODE="teardown";    shift ;;
+        --rebuild-worker)    REBUILD_WORKER=true; shift ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -164,6 +167,30 @@ if [[ "$MODE" == "redeploy" ]]; then
         sudo systemctl status manike-api --no-pager
     '
 
+    # ── Optionally rebuild the Cloud Run video compiler worker ──────
+    if [[ "$REBUILD_WORKER" == "true" ]]; then
+        echo "── Rebuilding Cloud Run job image..."
+        REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+        IMAGE_URI="us-central1-docker.pkg.dev/${PROJECT}/manike/manike-video-compiler:latest"
+
+        gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+        docker buildx build \
+            --platform linux/amd64 \
+            -f "${REPO_ROOT}/deploy/cloud-run-job/Dockerfile" \
+            -t "${IMAGE_URI}" \
+            --push \
+            "${REPO_ROOT}"
+
+        echo "── Updating Cloud Run job image..."
+        gcloud run jobs update manike-video-compiler \
+            --region="$REGION" \
+            --project="$PROJECT" \
+            --image="${IMAGE_URI}"
+
+        echo "    Worker image updated: ${IMAGE_URI}"
+    fi
+
     STATIC_IP=$(gcloud compute addresses describe manike-app-ip \
         --region="$REGION" --format='get(address)' 2>/dev/null || \
         gcloud compute instances describe manike-app \
@@ -173,6 +200,9 @@ if [[ "$MODE" == "redeploy" ]]; then
     echo "==> Redeploy complete!"
     echo "    API: http://$STATIC_IP:8000"
     echo "    Swagger: http://$STATIC_IP:8000/docs"
+    if [[ "$REBUILD_WORKER" == "true" ]]; then
+        echo "    Worker: us-central1-docker.pkg.dev/${PROJECT}/manike/manike-video-compiler:latest"
+    fi
     exit 0
 fi
 
@@ -569,8 +599,11 @@ echo "==> API will be ready at (~3-5 min for fresh VMs):"
 echo "    http://$STATIC_IP:8000"
 echo "    http://$STATIC_IP:8000/docs  (Swagger UI)"
 echo ""
-echo "==> To redeploy code changes:"
+echo "==> To redeploy code changes (API only):"
 echo "    ./deploy/deploy-gcp.sh --project $PROJECT --gemini-key \$GEMINI_KEY --redeploy"
+echo ""
+echo "==> To redeploy including Cloud Run video compiler worker:"
+echo "    ./deploy/deploy-gcp.sh --project $PROJECT --gemini-key \$GEMINI_KEY --redeploy --rebuild-worker"
 echo ""
 echo "==> To tear down everything:"
 echo "    ./deploy/deploy-gcp.sh --project $PROJECT --teardown"

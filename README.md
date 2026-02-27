@@ -24,7 +24,7 @@ The heartbeat of the system. It coordinates:
 
 ### 4. Chat Pipeline
 - **ChatManager** orchestrates a **ConversationFlow** state machine that collects travel requirements (destination, dates, budget, travelers, preferences, accommodations).
-- **FieldExtractor** uses AI + regex to parse user messages; **ResponseGenerator** creates contextual replies.
+- **FieldExtractor** uses AI + regex to parse user messages; **ResponseGenerator** creates contextual replies keeping chat clean — the itinerary detail appears only in the right panel, never in chat.
 
 ### 5. Persistence Layer
 - **SQL Data**: PostgreSQL for relational metadata (tenants, users, itineraries, media records).
@@ -33,6 +33,8 @@ The heartbeat of the system. It coordinates:
 
 ### 6. Core Workflow
 Chat session → extract travel requirements → AI generates itinerary JSON → match images/clips via Milvus semantic search → compile video from matched clips (FFmpeg) → upload to GCS.
+
+---
 
 ## Getting Started
 
@@ -48,10 +50,6 @@ pip install -r requirements.txt
 ```
 
 ### Environment Variables
-```bash
-cp deploy/.env.gcp.example .env
-# Edit .env with your values
-```
 
 | Variable | Description |
 |----------|-------------|
@@ -63,22 +61,26 @@ cp deploy/.env.gcp.example .env
 | `AI_PROVIDER` | `gemini` or `claude` |
 | `GEMINI_API_KEY` | Google Gemini API key (if using Gemini) |
 | `CLAUDE_API_KEY` | Anthropic Claude API key (if using Claude) |
-| `VIDEO_COMPILER` | `local` (default) or `cloudrun` |
-| `CLOUD_RUN_JOB_NAME` | Full Cloud Run Job name (when `VIDEO_COMPILER=cloudrun`) |
+| `VIDEO_COMPILER` | `local` (FFmpeg on VM, default) or `cloudrun` (async Cloud Run Job) |
+| `CLOUD_RUN_JOB_NAME` | Full Cloud Run Job resource name (required when `VIDEO_COMPILER=cloudrun`) |
 | `CLOUD_RUN_REGION` | Cloud Run region (default: `us-central1`) |
 
 ### Seeding the DB
 ```bash
 python3 seed_db.py
 ```
-This creates the default tenant, a tenant admin (`admin@manike.ai` / `admin123`), and a super admin (`superadmin@manike.ai` / `superadmin123`).
+Creates the default tenant, a tenant admin (`admin@manike.ai` / `admin123`), and a super admin (`superadmin@manike.ai` / `superadmin123`).
 
 ### Running the Engine
 ```bash
 python3 app/main.py
+# or
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Access the Swagger UI at `http://localhost:8000/docs`
+
+---
 
 ## Chat UI
 
@@ -90,13 +92,13 @@ The backend serves a built-in chat interface for AI-powered travel planning.
 2. Log in with `admin@manike.ai` / `admin123`
 3. You'll be redirected to the chat UI at `http://<HOST>:8000/`
 
-**On the current GCP deployment:** http://34.171.132.91:8000/auth/login
+**Staging URL:** http://35.239.250.79:8000/auth/login
 
 The chat UI supports:
 - Natural language conversation to collect travel preferences
-- AI-powered itinerary generation
-- Image and cinematic clip matching per activity
-- Video compilation of matched clips
+- AI-powered itinerary generation (auto-triggered when all fields are collected)
+- Image and cinematic clip matching per activity via Milvus semantic search
+- Cinematic video compilation with live progress indicator
 - Voice input mode with HeyGen avatar integration
 
 ### Chat API Flow
@@ -121,15 +123,23 @@ curl -s http://localhost:8000/itinerary/generate \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"session_id": "SESSION_ID"}'
+
+# 5. Compile video
+curl -s -X POST http://localhost:8000/itinerary/ITINERARY_ID/compile-video \
+  -H "Authorization: Bearer $TOKEN"
+
+# 6. Poll video status (when VIDEO_COMPILER=cloudrun)
+curl -s http://localhost:8000/itinerary/ITINERARY_ID/video-status \
+  -H "Authorization: Bearer $TOKEN"
 ```
+
+---
 
 ## Inserting Data into PostgreSQL and Milvus
 
-When you upload images or cinematic clips, the backend performs a **dual-write**: it saves metadata to PostgreSQL and generates a 128-dim embedding that gets inserted into Milvus for semantic search. This happens automatically via the upload API endpoints.
+When you upload images or cinematic clips, the backend performs a **dual-write**: it saves metadata to PostgreSQL and generates a 128-dim embedding that gets inserted into Milvus for semantic search.
 
 ### Authentication
-
-All data endpoints require a JWT token:
 
 ```bash
 TOKEN=$(curl -s http://localhost:8000/auth/login \
@@ -139,18 +149,16 @@ TOKEN=$(curl -s http://localhost:8000/auth/login \
 
 ### Upload Images
 
-**Upload a file directly** (saves to GCS, writes to PostgreSQL + Milvus):
 ```bash
+# Upload a file directly
 curl -X POST http://localhost:8000/images/upload-file \
   -H "Authorization: Bearer $TOKEN" \
   -F "name=Galle Fort Lighthouse" \
   -F "tags=galle,fort,sunset,heritage,lighthouse" \
   -F "location=Galle, Sri Lanka" \
   -F "file=@/path/to/galle-fort.jpg"
-```
 
-**Register an image by URL** (if already hosted on GCS or elsewhere):
-```bash
+# Register by URL (if already in GCS)
 curl -X POST http://localhost:8000/images/ \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -164,8 +172,8 @@ curl -X POST http://localhost:8000/images/ \
 
 ### Upload Cinematic Clips
 
-**Upload a video file** (saves to GCS, writes to PostgreSQL + Milvus):
 ```bash
+# Upload a video file
 curl -X POST http://localhost:8000/cinematic-clips/upload-file \
   -H "Authorization: Bearer $TOKEN" \
   -F "name=Galle Fort Aerial Drone" \
@@ -173,10 +181,8 @@ curl -X POST http://localhost:8000/cinematic-clips/upload-file \
   -F "duration=15.5" \
   -F "description=Drone footage of Galle Fort from above" \
   -F "file=@/path/to/galle-drone.mp4"
-```
 
-**Register a clip by URL**:
-```bash
+# Register by URL
 curl -X POST http://localhost:8000/cinematic-clips/ \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -191,35 +197,21 @@ curl -X POST http://localhost:8000/cinematic-clips/ \
 
 ### Semantic Search
 
-Once data is in Milvus, you can search semantically:
-
 ```bash
-# Search images by natural language
 curl -X POST http://localhost:8000/images/search \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query": "beautiful ancient fortress at sunset", "limit": 5}'
 
-# Search cinematic clips
 curl -X POST http://localhost:8000/cinematic-clips/search \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query": "aerial drone shot of historic fort", "limit": 5}'
 ```
 
-### How the Dual-Write Works
-
-When you upload an image or clip:
-1. **GCS**: File is uploaded to the configured bucket
-2. **PostgreSQL**: Metadata row is inserted (`ImageLibrary` or `CinematicClip` table)
-3. **Milvus**: A 128-dim TF-IDF embedding is generated from `name + tags + location/description` and inserted into the `image_vectors` or `clip_vectors` collection
-
-The embedding uses travel-domain semantic groups (beach, mountain, temple, heritage, nature, etc.) for the first dimensions, plus character-level hash features for the remainder. Search uses COSINE similarity with HNSW indexing.
-
-### Batch Upload Example
+### Batch Upload
 
 ```bash
-# Upload multiple images from a directory
 for img in /path/to/images/*.jpg; do
   name=$(basename "$img" .jpg | tr '-_' ' ')
   curl -X POST http://localhost:8000/images/upload-file \
@@ -230,13 +222,15 @@ for img in /path/to/images/*.jpg; do
 done
 ```
 
+---
+
 ## GCP Deployment
 
 The `deploy/` directory contains everything needed to provision the backend on GCP.
 
 ### Staging Environment (Project: `manike-ai-staging`)
 
-> Environment variables are stored in `.env` on the `manike-app` Compute Engine VM — not in Cloud Run or Secret Manager. Use the links and commands below to view or edit them.
+> Environment variables are stored in `.env` on the `manike-app` Compute Engine VM.
 
 | Resource | GCP Console Link |
 |----------|-----------------|
@@ -247,33 +241,20 @@ The `deploy/` directory contains everything needed to provision the backend on G
 | `manike-ai-media` GCS bucket | [View bucket](https://console.cloud.google.com/storage/browser/manike-ai-media?project=manike-ai-staging) |
 | Cloud Run Jobs | [View jobs](https://console.cloud.google.com/run/jobs?project=manike-ai-staging) |
 | `manike-video-compiler` job | [View job](https://console.cloud.google.com/run/jobs/details/us-central1/manike-video-compiler?project=manike-ai-staging) |
-| VM serial/startup logs | [View logs](https://console.cloud.google.com/logs/query?project=manike-ai-staging) |
+| VPC connectors | [View connectors](https://console.cloud.google.com/networking/connectors/list?project=manike-ai-staging) |
 | Firewall rules | [View firewall](https://console.cloud.google.com/networking/firewalls/list?project=manike-ai-staging) |
-| Cloud NAT | [View NAT](https://console.cloud.google.com/net-services/nat/list?project=manike-ai-staging) |
+| Logs | [View logs](https://console.cloud.google.com/logs/query?project=manike-ai-staging) |
 
-**To view or edit environment variables on the staging VM:**
+**View or edit environment variables on the staging VM:**
 ```bash
-# SSH into the app VM
 gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging
-
-# View current env vars
 sudo cat /home/manike/menike_backend_poc/.env
-
-# Edit env vars
 sudo nano /home/manike/menike_backend_poc/.env
-
-# Restart the service after changes
 sudo systemctl restart manike-api
-sudo systemctl status manike-api --no-pager
 ```
 
-**Or edit in a single command without SSH:**
+**Single-command variable update:**
 ```bash
-# Print all env vars
-gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging \
-  --command='sudo cat /home/manike/menike_backend_poc/.env'
-
-# Update a single variable (e.g. AI_PROVIDER)
 gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging \
   --command='sudo sed -i "s/^AI_PROVIDER=.*/AI_PROVIDER=claude/" /home/manike/menike_backend_poc/.env && sudo systemctl restart manike-api'
 ```
@@ -282,24 +263,26 @@ gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging \
 
 | Resource | Type | Details |
 |----------|------|---------|
-| `manike-postgres` | GCE e2-micro | PostgreSQL 15 in Docker, internal only |
-| `manike-milvus` | GCE e2-small | Milvus + etcd + MinIO in Docker, internal only |
-| `manike-app` | GCE e2-micro | FastAPI app via systemd, public ephemeral IP |
-| `manike-ai-media` | GCS bucket | Media storage |
-| `manike-video-compiler` | Cloud Run Job | Async video compilation (2 vCPU, 4GB RAM) |
-| `manike-router/manike-nat` | Cloud NAT | Internet access for internal VMs |
+| `manike-postgres` | GCE e2-micro | PostgreSQL 15 in Docker, internal-only |
+| `manike-milvus` | GCE e2-small | Milvus + etcd + MinIO in Docker, internal-only |
+| `manike-app` | GCE e2-micro | FastAPI via systemd, static public IP |
+| `manike-ai-media` | GCS bucket | Media storage (publicly readable) |
+| `manike-video-compiler` | Cloud Run Job | Async video compilation (2 vCPU, 4 GB RAM, maxRetries=2) |
+| `manike-connector` | VPC connector | Routes Cloud Run → internal VMs (PostgreSQL at `10.128.0.2`) |
+| `manike-router` / `manike-nat` | Cloud NAT | Internet access for internal VMs |
 
 ### Deploy files
 
 | File | Purpose |
 |------|---------|
-| `deploy/deploy-gcp.sh` | One-command provisioning script |
-| `deploy/setup-cloud-run-job.sh` | Cloud Run Job setup for async video compilation |
-| `deploy/cloud-run-job/` | Dockerfile, worker.py, requirements for the video worker |
+| `deploy/deploy-gcp.sh` | One-command provisioning and redeploy script |
+| `deploy/setup-cloud-run-job.sh` | Cloud Run Job setup (VPC connector, image build, IAM) |
+| `deploy/cloud-run-job/Dockerfile` | Worker image — build context is repo root |
+| `deploy/cloud-run-job/worker.py` | Video stitching worker with GCS idempotency check |
+| `deploy/cloud-run-job/requirements.txt` | Worker Python deps |
 | `deploy/docker-compose-postgres.yml` | PostgreSQL container config |
 | `deploy/docker-compose-milvus.yml` | Milvus stack config |
 | `deploy/manike-api.service` | Systemd unit for the FastAPI service |
-| `deploy/.env.gcp.example` | Environment variable template |
 
 ### Initial Deployment
 
@@ -320,78 +303,68 @@ gcloud compute ssh manike-app --zone=us-central1-a --project=manike-ai-staging \
     --deploy-method scp
 ```
 
-Then upload the code manually:
-```bash
-# Create tarball
-tar czf /tmp/menike_backend_poc.tar.gz \
-    --exclude='.venv' --exclude='.git' --exclude='.env' \
-    menike_backend_poc
-
-# Upload to VM
-gcloud compute scp /tmp/menike_backend_poc.tar.gz manike-app:/tmp/ --zone=us-central1-a
-
-# Extract, install deps, seed DB, start service
-gcloud compute ssh manike-app --zone=us-central1-a --command='
-  sudo bash -c "
-    tar xzf /tmp/menike_backend_poc.tar.gz -C /home/manike/
-    chown -R manike:manike /home/manike/menike_backend_poc
-    cd /home/manike/menike_backend_poc
-    sudo -u manike python3 -m venv .venv
-    sudo -u manike .venv/bin/pip install --upgrade pip
-    sudo -u manike .venv/bin/pip install -r requirements.txt
-    sudo -u manike .venv/bin/python3 seed_db.py
-    cp deploy/manike-api.service /etc/systemd/system/
-    systemctl daemon-reload && systemctl enable manike-api && systemctl start manike-api
-  "
-'
-```
-
-The script will:
-1. Set up Cloud NAT (so internal VMs can download Docker images)
-2. Create firewall rules (port 8000 public, 5432/19530 internal only)
-3. Provision all 3 VMs with Docker CE and startup scripts
-4. Create a GCS bucket for media storage
-5. Configure the app with internal IPs and start the service
-
 **deploy-gcp.sh flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project` | (required) | GCP project ID |
-| `--gemini-key` | (empty) | Gemini API key |
-| `--secret-key` | (random) | JWT signing secret |
+| `--project` | *(required)* | GCP project ID |
+| `--gemini-key` | — | Gemini API key |
+| `--secret-key` | *(random)* | JWT signing secret |
 | `--postgres-password` | `manike_secret` | PostgreSQL password |
 | `--zone` | `us-central1-a` | GCE zone |
 | `--bucket` | `manike-ai-media` | GCS bucket name |
-| `--repo-url` | — | Git repo URL (for git mode) |
+| `--repo-url` | — | Git repo URL (for git deploy method) |
 | `--repo-branch` | `main` | Git branch |
 | `--deploy-method` | `scp` | `git` or `scp` |
-| `--redeploy` | — | Push code to existing VM and restart (no infrastructure changes) |
-| `--teardown` | — | Destroy all VMs, IPs, firewall rules, NAT, SA (bucket preserved) |
+| `--redeploy` | — | Push updated code to existing VM and restart |
+| `--rebuild-worker` | — | Also rebuild and push the Cloud Run job image (use with `--redeploy`) |
+| `--teardown` | — | Destroy all VMs, IPs, firewall, NAT, SA (bucket preserved) |
 
-### Setting Up the Cloud Run Video Compiler
+### Redeploying After Code Changes
 
-After the initial deployment, set up async video compilation:
+**API only (most common):**
+```bash
+./deploy/deploy-gcp.sh --project manike-ai-staging --redeploy
+```
+
+**API + Cloud Run video worker** (when `worker.py`, `media_processor.py`, or `storage.py` changed):
+```bash
+./deploy/deploy-gcp.sh --project manike-ai-staging --redeploy --rebuild-worker
+```
+
+The redeploy: tarballs local code → SCPs to VM → extracts (preserving `.env`) → `pip install` → runs migrations → restarts the service. With `--rebuild-worker` it also: builds a linux/amd64 Docker image → pushes to Artifact Registry → updates the Cloud Run Job.
+
+### Setting Up the Cloud Run Video Compiler (first time)
 
 ```bash
 # Create Artifact Registry repo (one-time)
 gcloud artifacts repositories create manike \
-    --repository-format=docker --location=us-central1
+    --repository-format=docker --location=us-central1 \
+    --project=YOUR_GCP_PROJECT_ID
 
 # Get the PostgreSQL internal IP
 PG_IP=$(gcloud compute instances describe manike-postgres \
     --zone=us-central1-a --format='get(networkInterfaces[0].networkIP)')
 
-# Build and deploy the Cloud Run Job
+# Build, push, and configure the Cloud Run Job
 export PROJECT_ID=YOUR_GCP_PROJECT_ID
 export DATABASE_URL="postgresql://manike:manike_secret@${PG_IP}:5432/manike_db"
 export GCS_BUCKET_NAME=manike-ai-media
 
 ./deploy/setup-cloud-run-job.sh
+```
 
-# Update the app server .env
+`setup-cloud-run-job.sh` will:
+1. Enable `vpcaccess.googleapis.com` and other required APIs
+2. Create the `manike-connector` VPC connector if it doesn't exist (allows Cloud Run to reach PostgreSQL on its internal IP)
+3. Build and push the Docker image using the repo root as the build context
+4. Create or update the Cloud Run Job with `--max-retries=2`, VPC connector, 2 vCPU, 4 GB RAM
+5. Grant `roles/run.admin` to the app service account
+
+Then configure the app VM:
+```bash
 gcloud compute ssh manike-app --zone=us-central1-a --command='
-  sudo -u manike bash -c "cat >> /home/manike/menike_backend_poc/.env <<EOF
+  sudo bash -c "cat >> /home/manike/menike_backend_poc/.env <<EOF
 VIDEO_COMPILER=cloudrun
 CLOUD_RUN_JOB_NAME=projects/YOUR_PROJECT_ID/locations/us-central1/jobs/manike-video-compiler
 CLOUD_RUN_REGION=us-central1
@@ -400,71 +373,53 @@ EOF"
 '
 ```
 
-### Redeploying After Code Changes (deploy-gcp.sh --redeploy)
+### Video Compiler Retry Behaviour
 
-The `--redeploy` flag handles everything in one command:
+The Cloud Run Job uses `maxRetries=2`. On retry the worker skips re-encoding:
 
-```bash
-./deploy/deploy-gcp.sh \
-    --project manike-ai-staging \
-    --gemini-key YOUR_GEMINI_KEY \
-    --redeploy
-```
+1. Before stitching, the worker checks whether the output MP4 already exists in GCS
+2. If it does → skips FFmpeg stitching and GCS upload, jumps straight to the DB update
+3. If stitching fails → exits immediately (no retry will fix a broken clip encoding)
+4. If only the DB update fails → the job retries and the GCS check prevents double-encoding
 
-It will: tarball local code → SCP to VM → extract (preserving `.env`) → `pip install` → run migrations → restart the service.
+This means a transient DB/network error will recover on retry without wasting CPU re-compiling the video.
 
-### Tearing Down and Recreating the Environment
+### Tearing Down
 
 ```bash
 # Destroy all VMs, IPs, firewall rules, NAT, SA (bucket is preserved)
 ./deploy/deploy-gcp.sh --project manike-ai-staging --teardown
-
-# Recreate from scratch on a new project
-./deploy/deploy-gcp.sh \
-    --project YOUR_NEW_PROJECT_ID \
-    --gemini-key YOUR_GEMINI_KEY
 ```
 
 ---
 
 ## Accessing Milvus and PostgreSQL Locally
 
-Both databases are on **internal-only VMs** (no public IP). Access them locally by opening an SSH tunnel through the `manike-app` VM, which has network access to both.
+Both databases are on **internal-only VMs**. Access them via SSH tunnel through the `manike-app` VM.
 
-### Milvus — Attu GUI (visual browser)
+### Milvus — Attu GUI
 
-[Attu](https://github.com/zilliztech/attu) is the official Milvus web UI. Run it locally via Docker:
-
-**Step 1 — Open an SSH tunnel to Milvus (keep this terminal open):**
+**Step 1 — Open SSH tunnel (keep terminal open):**
 ```bash
 gcloud compute ssh manike-app \
-    --zone=us-central1-a \
-    --project=manike-ai-staging \
+    --zone=us-central1-a --project=manike-ai-staging \
     -- -L 19530:10.128.0.3:19530 -N
 ```
 
-**Step 2 — Launch Attu in a second terminal:**
+**Step 2 — Launch Attu:**
 ```bash
-docker run -d --rm \
-    -p 8080:3000 \
+docker run -d --rm -p 8080:3000 \
     -e MILVUS_URL=host.docker.internal:19530 \
     zilliz/attu:latest
 ```
 
-**Step 3 — Open Attu in your browser:**
-```
-http://localhost:8080
-```
-Connect with `host.docker.internal:19530` (pre-filled). You can browse collections, inspect entities, run queries, and view index stats.
+Open `http://localhost:8080` and connect with `host.docker.internal:19530`.
 
-**Querying Milvus via Python locally:**
+**Query via Python:**
 ```python
 from pymilvus import connections, Collection, utility
-
-connections.connect(host="localhost", port=19530)  # tunnel must be open
-
+connections.connect(host="localhost", port=19530)
 print(utility.list_collections())
-
 coll = Collection("image_vectors")
 coll.load()
 results = coll.query(expr='id != ""', output_fields=["id", "metadata"], limit=10)
@@ -472,50 +427,34 @@ for r in results:
     print(r)
 ```
 
----
+### PostgreSQL — psql / pgAdmin
 
-### PostgreSQL — pgAdmin or psql
-
-**Step 1 — Open an SSH tunnel to PostgreSQL (keep this terminal open):**
+**Step 1 — Open SSH tunnel:**
 ```bash
 gcloud compute ssh manike-app \
-    --zone=us-central1-a \
-    --project=manike-ai-staging \
+    --zone=us-central1-a --project=manike-ai-staging \
     -- -L 5432:10.128.0.2:5432 -N
 ```
 
-**Step 2 — Connect with psql:**
+**Step 2 — Connect:**
 ```bash
 psql "postgresql://manike:manike_secret@localhost:5432/manike_db"
 ```
 
-**Step 3 — Or connect with pgAdmin:**
-
-Open pgAdmin → Add New Server:
-
-| Field | Value |
-|-------|-------|
-| Host | `localhost` |
-| Port | `5432` |
-| Database | `manike_db` |
-| Username | `manike` |
-| Password | `manike_secret` |
+Or connect pgAdmin to `localhost:5432`, database `manike_db`, user `manike`.
 
 **Useful queries:**
 ```sql
--- All tenants
-SELECT id, name FROM tenant;
-
 -- All uploaded images
 SELECT name, location, image_url FROM image_library ORDER BY created_at DESC;
 
 -- All cinematic clips
-SELECT name, location, video_url, duration FROM cinematic_clip ORDER BY created_at DESC;
+SELECT name, video_url, duration FROM cinematic_clip ORDER BY created_at DESC;
 
 -- Generated itineraries
 SELECT destination, days, status, created_at FROM itinerary ORDER BY created_at DESC;
 
--- Activity-to-clip mapping for a given itinerary
+-- Activity-to-clip mapping
 SELECT day, activity_name, location, cinematic_clip_url
 FROM itinerary_activity
 WHERE itinerary_id = 'YOUR_ITINERARY_ID'
@@ -528,49 +467,29 @@ JOIN itinerary i ON i.id = fv.itinerary_id
 ORDER BY fv.created_at DESC;
 ```
 
+### Operational Commands
+
+```bash
+# Stream API logs
+gcloud compute ssh manike-app --zone=us-central1-a \
+    --command='sudo journalctl -u manike-api -f --no-pager -n 50'
+
+# Check Cloud Run job executions
+gcloud run jobs executions list --job=manike-video-compiler \
+    --region=us-central1 --project=manike-ai-staging --limit=5
+
+# Stream Cloud Run job logs
+gcloud logging read 'resource.labels.job_name="manike-video-compiler"' \
+    --project=manike-ai-staging --limit=50 \
+    --format='value(severity,textPayload)'
+
+# SSH access
+gcloud compute ssh manike-app --zone=us-central1-a
+gcloud compute ssh manike-postgres --zone=us-central1-a --tunnel-through-iap
+gcloud compute ssh manike-milvus --zone=us-central1-a --tunnel-through-iap
+```
+
 ---
-
-### Redeploying After Code Changes
-
-Use the `--redeploy` flag — it handles tarball, upload, extract, pip install, migrations, and service restart automatically. See [Redeploying After Code Changes (deploy-gcp.sh --redeploy)](#redeploying-after-code-changes-deploy-gcpsh---redeploy) above.
-
-**If you changed the Cloud Run Job worker** (deploy/cloud-run-job/):
-```bash
-# Rebuild and push the Docker image, then update the job
-export PROJECT_ID=YOUR_GCP_PROJECT_ID
-export DATABASE_URL="postgresql://manike:manike_secret@PG_INTERNAL_IP:5432/manike_db"
-export GCS_BUCKET_NAME=manike-ai-media
-
-./deploy/setup-cloud-run-job.sh
-```
-
-### Verify deployment
-
-```bash
-# Get the app server's public IP
-gcloud compute instances describe manike-app \
-    --zone=us-central1-a \
-    --format='get(networkInterfaces[0].accessConfigs[0].natIP)'
-
-# Check serial output for startup progress
-gcloud compute instances get-serial-port-output manike-app --zone=us-central1-a | grep 'Manike API'
-
-# Test the API
-curl http://<APP_IP>:8000/docs
-curl http://<APP_IP>:8000/auth/login -d "username=admin@manike.ai&password=admin123"
-```
-
-### SSH access
-```bash
-gcloud compute ssh manike-app --zone=us-central1-a                       # App server
-gcloud compute ssh manike-postgres --zone=us-central1-a --tunnel-through-iap  # DB
-gcloud compute ssh manike-milvus --zone=us-central1-a --tunnel-through-iap    # Milvus
-```
-
-### Check service logs
-```bash
-gcloud compute ssh manike-app --zone=us-central1-a --command='sudo journalctl -u manike-api -f --no-pager -n 50'
-```
 
 ## Work Done
 - [x] Multi-Tenant Database Design with SQLModel + PostgreSQL
@@ -584,5 +503,8 @@ gcloud compute ssh manike-app --zone=us-central1-a --command='sudo journalctl -u
 - [x] Video Compilation: collect clips per itinerary, stitch, upload to GCS (local + Cloud Run)
 - [x] GCS Storage: replaced S3 with Google Cloud Storage
 - [x] GCP Deployment: 3-VM architecture with single deploy script + Cloud NAT
-- [x] Cloud Run Job: Async video compilation offloaded to serverless container
-- [x] Chat UI: Built-in web interface with voice + avatar support
+- [x] Cloud Run Job: Async video compilation with VPC connector for DB access
+- [x] Idempotent worker: GCS check prevents re-encoding on Cloud Run retries
+- [x] Chat UI: clean conversation — itinerary detail in panel only, not in chat messages
+- [x] Chat UI: live video compilation progress with auto-polling (no page refresh needed)
+- [x] Chat UI: voice input mode with HeyGen avatar integration

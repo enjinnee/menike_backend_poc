@@ -86,11 +86,14 @@ Their latest message: "{user_message}"
 
 IMPORTANT INSTRUCTIONS:
 - If the user is asking a QUESTION (about their destination, activities, recommendations, travel tips, safety, things to do, etc.), you MUST answer their question helpfully and thoroughly using your travel knowledge.
-- If the user is requesting CHANGES to their itinerary (e.g., "add a beach day", "swap the hotel", "remove Day 3 activity"), acknowledge the change request enthusiastically and let them know you'll regenerate an updated version. They can click "Regenerate Itinerary" to apply the changes.
+- If the user is requesting CHANGES to their itinerary (e.g., "add a beach day", "swap the hotel", "remove Day 3 activity"), acknowledge the change request enthusiastically and let them know you'll update it.
 - If the user is NOT asking a question (just chatting, confirming details, saying thanks, etc.), generate a SHORT excited response (2-3 sentences) acknowledging their trip. Let them know you're ready to help with any questions or changes.
 - NEVER tell the user to click a button to generate their itinerary - it happens automatically.
+- NEVER list out a day-by-day itinerary schedule in your response — the itinerary is shown in the panel on the right, not in the chat.
+- NEVER mention downloading, exporting, or refreshing the page.
+- NEVER mention video compilation, background processing, or tell the user to wait or refresh — the UI handles that automatically.
 - Always use their name naturally and add 1-2 relevant emojis.
-- Be a helpful travel expert!"""
+- Be a helpful travel expert! Keep responses conversational and brief (2-4 sentences max)."""
 
             try:
                 return self.provider.generate_content(completion_prompt)

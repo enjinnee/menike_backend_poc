@@ -313,23 +313,29 @@ async def compile_video(
     if not itinerary or itinerary.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Itinerary not found")
 
-    # Idempotent: return existing final video if already compiled
+    # Idempotent: return existing final video if already compiled or still processing.
+    # If the record is stuck in "processing" (e.g. a CloudRun job silently failed),
+    # delete it so compilation can be retried.
     existing_final = session.exec(
         select(FinalVideo)
         .where(FinalVideo.itinerary_id == itinerary.id)
         .where(FinalVideo.tenant_id == tenant_id)
     ).first()
     if existing_final:
-        return {
-            "message": "Final cinematic video already compiled",
-            "final_video": {
-                "id": existing_final.id,
-                "video_url": existing_final.video_url,
-                "itinerary_id": existing_final.itinerary_id,
-                "status": existing_final.status,
-                "clips_used": None,
+        if existing_final.status == "compiled" and existing_final.video_url:
+            return {
+                "message": "Final cinematic video already compiled",
+                "final_video": {
+                    "id": existing_final.id,
+                    "video_url": existing_final.video_url,
+                    "itinerary_id": existing_final.itinerary_id,
+                    "status": existing_final.status,
+                    "clips_used": None,
+                }
             }
-        }
+        # Record exists but is stuck in "processing" or "failed" — delete and retry
+        session.delete(existing_final)
+        session.commit()
 
     # Get activities in order
     activities = session.exec(
@@ -413,6 +419,44 @@ async def compile_video(
         return JSONResponse(content=response, status_code=202)
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# GET /itinerary/{id}/video-status - Poll video compilation status
+# ---------------------------------------------------------------------------
+@router.get("/{itinerary_id}/video-status")
+async def get_video_status(
+    itinerary_id: str,
+    tenant_id: str = Depends(get_current_tenant_id),
+    session: Session = Depends(get_session)
+):
+    """
+    Poll the video compilation status for an itinerary.
+    Returns:
+      - status: "not_started" | "processing" | "compiled" | "failed"
+      - video_url: populated only when status == "compiled"
+      - error: populated only when status == "failed"
+    """
+    itinerary = session.get(Itinerary, itinerary_id)
+    if not itinerary or itinerary.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Itinerary not found")
+
+    final_video = session.exec(
+        select(FinalVideo)
+        .where(FinalVideo.itinerary_id == itinerary_id)
+        .where(FinalVideo.tenant_id == tenant_id)
+    ).first()
+
+    if not final_video:
+        return {"status": "not_started", "video_url": None, "error": None}
+
+    if final_video.status == "failed":
+        return {"status": "failed", "video_url": None, "error": "Video compilation failed. Please try again."}
+
+    if final_video.status == "compiled" and final_video.video_url:
+        return {"status": "compiled", "video_url": final_video.video_url, "error": None}
+
+    return {"status": "processing", "video_url": None, "error": None}
 
 
 # ---------------------------------------------------------------------------
