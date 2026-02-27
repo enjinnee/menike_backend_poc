@@ -124,10 +124,15 @@ function setupEventListeners() {
     if (exitVideoMode) exitVideoMode.addEventListener('click', disableVideoMode);
 
     document.getElementById('closeVideoBar').addEventListener('click', () => {
-        document.getElementById('videoBar').style.display = 'none';
+        const videoBar = document.getElementById('videoBar');
         document.getElementById('finalVideoPlayer').pause();
         document.getElementById('downloadVideoLink').style.display = 'none';
+        videoBar.style.display = 'none';
         document.querySelector('.container').style.height = '';
+        // Only inject the "show video" chip once
+        if (!document.getElementById('showVideoChip')) {
+            addShowVideoChip();
+        }
     });
 
     // Mobile sidebar toggle
@@ -652,7 +657,9 @@ function startNewChat() {
     currentItinerary = null;
     hasGeneratedItinerary = false;
     pendingRegenerate = false;
-    document.getElementById('videoBar').style.display = 'none';
+    const videoBar = document.getElementById('videoBar');
+    videoBar.style.display = 'none';
+    videoBar.dataset.videoUrl = '';
     document.getElementById('finalVideoPlayer').src = '';
     document.getElementById('downloadVideoLink').style.display = 'none';
     document.querySelector('.container').style.height = '';
@@ -703,7 +710,7 @@ function addCompileVideoButton(itineraryId) {
     btn.textContent = '🎬 Accept Itinerary & Create Video';
     btn.onclick = () => {
         btn.disabled = true;
-        btn.textContent = 'Compiling...';
+        btn.textContent = '⏳ Compiling...';
         compileAndShowVideo(itineraryId, btn);
     };
 
@@ -718,11 +725,24 @@ function addCompileVideoButton(itineraryId) {
 }
 
 async function compileAndShowVideo(itineraryId, btn) {
+    // On error/failure: reset button so user can retry
     const resetBtn = () => {
-        if (btn) { btn.disabled = false; btn.textContent = '🎬 Accept Itinerary & Create Video'; }
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🎬 Accept Itinerary & Create Video';
+        }
     };
 
-    // Insert a status message that we'll update in place
+    // On success: replace button with a "done" badge so it's clear compilation finished
+    const markBtnDone = () => {
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '✅ Video Created';
+            btn.className = 'btn btn-success btn-small';
+        }
+    };
+
+    // Insert a live status message we'll update in place
     const statusDiv = document.createElement('div');
     statusDiv.className = 'message assistant-message';
     statusDiv.id = 'compileStatusMessage';
@@ -780,18 +800,25 @@ async function compileAndShowVideo(itineraryId, btn) {
             if (data.status === 'compiled' && data.video_url) {
                 clearInterval(pollInterval);
                 removeStatusMsg();
+                markBtnDone();
+
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
                 showVideoPlayer(data.video_url);
-                addMessageToChat('assistant', `✅ Your cinematic video is ready! (compiled in ${elapsed}s) See the player below — you can download it too.`);
+
+                // Completion message
+                addMessageToChat('assistant', `🎉 Your cinematic trip video is ready! (compiled in ${elapsed}s)\nUse the player below to watch or download it.`);
+
+                // End-of-conversation message with "Start New Chat" affordance
+                addConversationEndMessage();
 
             } else if (data.status === 'failed') {
                 clearInterval(pollInterval);
                 removeStatusMsg();
-                addMessageToChat('assistant', `⚠️ Video compilation failed: ${data.error || 'Unknown error'}. You can still view your itinerary above.`);
+                addMessageToChat('assistant', `⚠️ Video compilation failed: ${data.error || 'Unknown error'}. You can still view your itinerary in the panel.`);
                 resetBtn();
 
             }
-            // else status is "processing" or "not_started" — keep polling
+            // else "processing" or "not_started" — keep polling
         } catch (e) {
             clearInterval(pollInterval);
             removeStatusMsg();
@@ -800,6 +827,31 @@ async function compileAndShowVideo(itineraryId, btn) {
             resetBtn();
         }
     }, 3000);
+}
+
+function addConversationEndMessage() {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message assistant-message';
+    messageDiv.id = 'conversationEndMessage';
+
+    const content = document.createElement('div');
+    content.className = 'message-content conversation-end-content';
+    content.innerHTML = `
+        <p class="conversation-end-text">
+            🌟 That's your trip all wrapped up! I hope you have an amazing journey.
+            Feel free to start a new chat whenever you're ready to plan another adventure.
+        </p>
+        <button class="btn btn-primary btn-small" id="endNewChatBtn">
+            + Start New Chat
+        </button>
+    `;
+
+    messageDiv.innerHTML = `<div class="message-avatar">🤖</div>`;
+    messageDiv.appendChild(content);
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    document.getElementById('endNewChatBtn').addEventListener('click', startNewChat);
 }
 
 function showVideoPlayer(url) {
@@ -811,6 +863,39 @@ function showVideoPlayer(url) {
     downloadLink.style.display = 'inline-flex';
     videoBar.style.display = 'block';
     // Shrink the container so the chat input stays above the fixed bar
-    const barHeight = videoBar.offsetHeight;
-    document.querySelector('.container').style.height = `calc(100vh - ${barHeight}px)`;
+    requestAnimationFrame(() => {
+        const barHeight = videoBar.offsetHeight;
+        document.querySelector('.container').style.height = `calc(100vh - ${barHeight}px)`;
+    });
+    // Store url so we can reopen it
+    videoBar.dataset.videoUrl = url;
+}
+
+function reopenVideoPlayer() {
+    const videoBar = document.getElementById('videoBar');
+    const url = videoBar.dataset.videoUrl;
+    if (url) showVideoPlayer(url);
+}
+
+function addShowVideoChip() {
+    const chipDiv = document.createElement('div');
+    chipDiv.className = 'message assistant-message';
+    chipDiv.id = 'showVideoChip';
+
+    const content = document.createElement('div');
+    content.className = 'message-content show-video-chip';
+    content.innerHTML = `
+        <span>🎬 Video hidden —</span>
+        <button class="btn btn-secondary btn-small" id="showVideoBtn">Show Video</button>
+    `;
+
+    chipDiv.innerHTML = `<div class="message-avatar">🤖</div>`;
+    chipDiv.appendChild(content);
+    chatMessages.appendChild(chipDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    document.getElementById('showVideoBtn').addEventListener('click', () => {
+        chipDiv.remove();
+        reopenVideoPlayer();
+    });
 }
