@@ -175,12 +175,26 @@ if [[ "$MODE" == "redeploy" ]]; then
 
         gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
+        # --provenance=false avoids an extra unknown/unknown attestation manifest that
+        # causes "Container manifest type must support amd64/linux" errors on Cloud Run
         docker buildx build \
             --platform linux/amd64 \
+            --provenance=false \
             -f "${REPO_ROOT}/deploy/cloud-run-job/Dockerfile" \
             -t "${IMAGE_URI}" \
             --push \
             "${REPO_ROOT}"
+
+        # Verify amd64 before updating the job — fail fast rather than break Cloud Run
+        PLATFORMS=$(docker buildx imagetools inspect "${IMAGE_URI}" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' 2>/dev/null \
+            || docker buildx imagetools inspect "${IMAGE_URI}" 2>&1 | grep -oP 'Platform:\s+\K\S+')
+        if ! echo "${PLATFORMS}" | grep -q "linux/amd64"; then
+            echo "ERROR: pushed image does not contain linux/amd64 — aborting worker update."
+            echo "       Detected: ${PLATFORMS}"
+            exit 1
+        fi
+        echo "    OK: linux/amd64 confirmed."
 
         echo "── Updating Cloud Run job image..."
         gcloud run jobs update manike-video-compiler \

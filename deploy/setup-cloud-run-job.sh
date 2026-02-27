@@ -72,13 +72,28 @@ fi
 #    Build context is the repo root so the Dockerfile can COPY app/ modules.
 # ---------------------------------------------------------------------------
 echo "==> Building image: ${IMAGE_URI}"
-# --platform linux/amd64 ensures compatibility with Cloud Run (needed on Apple Silicon)
+# --platform linux/amd64  — Cloud Run requires amd64 (critical on Apple Silicon hosts)
+# --provenance=false       — avoids an extra unknown/unknown attestation manifest that
+#                            causes "Container manifest type must support amd64/linux" errors
 docker buildx build \
     --platform linux/amd64 \
+    --provenance=false \
     -f "${SCRIPT_DIR}/cloud-run-job/Dockerfile" \
     -t "${IMAGE_URI}" \
     --push \
     "${REPO_ROOT}"
+
+# Verify the pushed image is amd64 — fail fast rather than trigger a broken Cloud Run job
+echo "==> Verifying image platform..."
+PLATFORMS=$(docker buildx imagetools inspect "${IMAGE_URI}" \
+    --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' 2>/dev/null \
+    || docker buildx imagetools inspect "${IMAGE_URI}" 2>&1 | grep -oP 'Platform:\s+\K\S+')
+if ! echo "${PLATFORMS}" | grep -q "linux/amd64"; then
+    echo "ERROR: pushed image does not contain linux/amd64 — Cloud Run will reject it."
+    echo "       Detected: ${PLATFORMS}"
+    exit 1
+fi
+echo "    OK: linux/amd64 confirmed."
 
 # ---------------------------------------------------------------------------
 # 4. Create (or update) the Cloud Run Job
