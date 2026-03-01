@@ -825,7 +825,49 @@ async function resumeSession(sessionId) {
             }
             const existing = document.getElementById('compileVideoMessage');
             if (existing) existing.remove();
-            addCompileVideoButton(data.itinerary_id);
+
+            // Check if video was already compiled for this session
+            try {
+                const vsRes = await authFetch(`/itinerary/${data.itinerary_id}/video-status`);
+                if (vsRes.ok) {
+                    const vsData = await vsRes.json();
+                    if (vsData.status === 'compiled' && vsData.video_url) {
+                        // Video already exists — show player, no Accept button
+                        showVideoPlayer(vsData.video_url);
+                    } else if (vsData.status === 'processing') {
+                        // Still compiling — show button in disabled/compiling state and resume polling
+                        addCompileVideoButton(data.itinerary_id);
+                        const resumedBtn = document.querySelector('#compileVideoMessage button');
+                        if (resumedBtn) {
+                            resumedBtn.disabled = true;
+                            resumedBtn.textContent = '⏳ Compiling...';
+                        }
+                        const pollInterval = setInterval(async () => {
+                            try {
+                                const pr = await authFetch(`/itinerary/${data.itinerary_id}/video-status`);
+                                const pd = await pr.json();
+                                if (pd.status === 'compiled' && pd.video_url) {
+                                    clearInterval(pollInterval);
+                                    const btn = document.querySelector('#compileVideoMessage button');
+                                    if (btn) { btn.disabled = true; btn.textContent = '✅ Video Created'; btn.className = 'btn btn-success btn-small'; }
+                                    showVideoPlayer(pd.video_url);
+                                } else if (pd.status === 'failed') {
+                                    clearInterval(pollInterval);
+                                    const btn = document.querySelector('#compileVideoMessage button');
+                                    if (btn) { btn.disabled = false; btn.textContent = '🎬 Accept Itinerary & Create Video'; }
+                                }
+                            } catch (_) { clearInterval(pollInterval); }
+                        }, 3000);
+                    } else {
+                        // not_started or failed — show the Accept button so user can try
+                        addCompileVideoButton(data.itinerary_id);
+                    }
+                } else {
+                    addCompileVideoButton(data.itinerary_id);
+                }
+            } catch (_) {
+                addCompileVideoButton(data.itinerary_id);
+            }
         }
 
         updateHeaderStatus(`Resumed: ${data.title}`);
