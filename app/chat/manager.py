@@ -73,13 +73,18 @@ class ChatManager:
                         self._changed_since_generation = True
                         print(f"DEBUG - Updated {field}: {current!r} → {value!r}")
 
-            # Handle skip requests on optional fields
+            # Handle skip requests on optional fields and accommodations declines
             next_question = self.flow.get_next_question()
             if next_question:
                 current_field = self.flow.get_current_field()
-                if current_field and not self.flow.is_field_required(current_field):
-                    if self.extractor.is_skip_request(user_message):
-                        self.flow.answered_fields.add(current_field)
+                if current_field:
+                    if not self.flow.is_field_required(current_field):
+                        if self.extractor.is_skip_request(user_message):
+                            self.flow.answered_fields.add(current_field)
+                    elif current_field == "accommodations":
+                        if self.extractor.is_skip_request(user_message):
+                            self.flow.update_field("accommodations", "none")
+                            self._changed_since_generation = True
 
             next_question = self.flow.get_next_question()
 

@@ -128,7 +128,12 @@ When the user mentions NEW information for a field that ALREADY has a value, you
 - "food" or "foodie" → "culinary experiences, local food"
 - "nature" → "nature, wildlife, scenic views"
 
-### 7. LANGUAGE - Detect language preferences
+### 7. ACCOMMODATIONS - Detect when not needed
+- "no accommodation", "no hotel", "no need for hotel", "day trip", "just for the day", "not staying overnight", "won't be staying", "no overnight" → return "none"
+- "I don't need accommodation", "no need to stay" → return "none"
+- Normal preferences: "luxury hotel", "budget hostel", "Airbnb" → extract as-is
+
+### 8. LANGUAGE - Detect language preferences
 - "in Spanish" or "Spanish speaking guide" → "Spanish"
 - If user writes in non-English, note that language
 

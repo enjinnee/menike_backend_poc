@@ -72,6 +72,16 @@ class ConversationFlow:
         self.answered_fields: Set[str] = set()
         self.trip_duration: Optional[int] = None
 
+    def is_day_trip(self) -> bool:
+        """Return True if the trip is a single day (start_date == end_date or duration == 1)."""
+        start = self.user_requirements.get("start_date")
+        end = self.user_requirements.get("end_date")
+        if start and end:
+            return start == end
+        if self.trip_duration == 1:
+            return True
+        return False
+
     def get_next_question(self) -> Optional[str]:
         """Get the next unanswered required question."""
         for step in CONVERSATION_STEPS:
@@ -93,6 +103,15 @@ class ConversationFlow:
                         continue
                     except Exception as e:
                         print(f"DEBUG - Error auto-calculating end_date: {e}")
+
+            # Skip accommodation for day trips or when user has indicated no need
+            if field == "accommodations":
+                if self.is_day_trip():
+                    self.user_requirements["accommodations"] = "none (day trip)"
+                    self.answered_fields.add("accommodations")
+                    continue
+                if self.user_requirements.get("accommodations") == "none":
+                    continue
 
             if is_required:
                 return step["question"]
