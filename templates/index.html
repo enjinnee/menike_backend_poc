@@ -23,11 +23,10 @@
                 + New Chat
             </button>
 
-            <div class="sidebar-section">
-                <h3>About</h3>
-                <p class="sidebar-text">
-                    Chat with your AI travel agent to plan your perfect trip. Tell us about your destination, dates, and preferences, then generate your personalized itinerary.
-                </p>
+            <!-- Past Chats -->
+            <div class="sidebar-section" id="pastChatsSection" style="display:none;">
+                <h3>Past Chats</h3>
+                <div id="pastChatsList" class="past-chats-list"></div>
             </div>
 
             <div class="sidebar-section">
@@ -150,25 +149,30 @@
         </aside>
     </div>
 
-    <!-- Sticky Video Player Bar -->
-    <div id="videoBar" class="video-bar" style="display:none;">
-        <div class="video-bar-header">
-            <span>🎬 Your Cinematic Trip Video</span>
-            <div class="video-bar-actions">
-                <a id="downloadVideoLink" href="#" download="cinematic-trip.mp4" class="btn btn-download" style="display:none;">⬇ Download</a>
-                <button id="closeVideoBar" class="close-btn">×</button>
+    <!-- Past Chat Restore Modal -->
+    <div id="restoreChatModal" class="restore-modal" style="display:none;">
+        <div class="restore-modal-backdrop" id="restoreModalBackdrop"></div>
+        <div class="restore-modal-card">
+            <div class="restore-modal-header">
+                <h3 id="restoreModalTitle">Past Trip</h3>
+                <button class="close-btn" id="closeRestoreModal">×</button>
+            </div>
+            <div class="restore-modal-body">
+                <video id="restoreVideoPlayer" class="restore-video-player" controls>
+                    Your browser does not support the video tag.
+                </video>
+                <div class="restore-modal-actions">
+                    <a id="restoreDownloadLink" href="#" download="cinematic-trip.mp4" class="btn btn-primary">⬇ Download Video</a>
+                </div>
             </div>
         </div>
-        <video id="finalVideoPlayer" class="final-video-player" controls autoplay>
-            Your browser does not support the video tag.
-        </video>
     </div>
 
     <!-- Voice Input Manager -->
-    <script src="/static/js/voice-input.js?v=2"></script>
+    <script src="/static/js/voice-input.js?v=3"></script>
     <!-- HeyGen Avatar Manager -->
-    <script src="/static/js/heygen-avatar.js?v=2"></script>
+    <script src="/static/js/heygen-avatar.js?v=3"></script>
     <!-- Main Application -->
-    <script src="/static/js/app.js?v=2"></script>
+    <script src="/static/js/app.js?v=3"></script>
 </body>
 </html>

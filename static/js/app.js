@@ -34,6 +34,7 @@ let voiceInputManager = null;
 let heygenConfigured = false;
 let isProcessingVoice = false;
 let currentItinerary = null;
+let currentVideoUrl = null;  // URL of the video for the active session
 
 // ---------------------------------------------------------------------------
 // DOM Elements
@@ -80,6 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeSession();
     setupEventListeners();
     checkHeygenConfig();
+    renderChatHistory();
 });
 
 function initializeSession() {
@@ -123,17 +125,11 @@ function setupEventListeners() {
     if (voiceButton) voiceButton.addEventListener('click', handleVoiceButtonClick);
     if (exitVideoMode) exitVideoMode.addEventListener('click', disableVideoMode);
 
-    document.getElementById('closeVideoBar').addEventListener('click', () => {
-        const videoBar = document.getElementById('videoBar');
-        document.getElementById('finalVideoPlayer').pause();
-        document.getElementById('downloadVideoLink').style.display = 'none';
-        videoBar.style.display = 'none';
-        document.querySelector('.container').style.height = '';
-        // Only inject the "show video" chip once
-        if (!document.getElementById('showVideoChip')) {
-            addShowVideoChip();
-        }
-    });
+    // Restore-chat modal close
+    const closeRestoreBtn = document.getElementById('closeRestoreModal');
+    if (closeRestoreBtn) closeRestoreBtn.addEventListener('click', closePastChatModal);
+    const restoreBackdrop = document.getElementById('restoreModalBackdrop');
+    if (restoreBackdrop) restoreBackdrop.addEventListener('click', closePastChatModal);
 
     // Mobile sidebar toggle
     if (sidebarToggle) {
@@ -558,9 +554,7 @@ function displayItinerary(itinerary, rawData) {
                     const mediaLine = act.image_url
                         ? `<img src="${act.image_url}" alt="${act.title}" style="max-width:100%;border-radius:6px;margin:4px 0;">`
                         : '';
-                    const clipLine = act.cinematic_clip_url
-                        ? `<div style="font-size:12px;color:#3b82f6;">🎬 Clip: ${act.cinematic_clip_url}</div>`
-                        : '';
+                    const clipLine = '';
                     dayHtml += `<div class="day-item">
                         <strong>• ${act.title}</strong><br>
                         <small>${act.location || ''}</small>
@@ -600,7 +594,7 @@ function displayItinerary(itinerary, rawData) {
             div.className = 'day-item';
             div.innerHTML = `<strong>Day ${act.day}: ${act.activity_name}</strong> — ${act.location || ''}
                 ${act.image_url ? `<br><img src="${act.image_url}" style="max-width:100%;border-radius:6px;margin:4px 0;">` : ''}
-                ${act.cinematic_clip_url ? `<br><small style="color:#3b82f6;">🎬 ${act.cinematic_clip_url}</small>` : ''}`;
+                `;
             actSection.appendChild(div);
         });
         itineraryContent.appendChild(actSection);
@@ -635,10 +629,107 @@ function exportItinerary() {
 }
 
 // ---------------------------------------------------------------------------
+// Chat history (localStorage)
+// ---------------------------------------------------------------------------
+const CHAT_HISTORY_KEY = 'manike_chat_history';
+
+function loadChatHistory() {
+    try {
+        return JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) || '[]');
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveChatHistory(history) {
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(history));
+}
+
+function archiveCurrentSession(destination, videoUrl) {
+    const history = loadChatHistory();
+    history.unshift({
+        sessionId: currentSessionId,
+        destination: destination || 'Trip',
+        videoUrl: videoUrl || null,
+        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    });
+    // Keep max 20 entries
+    saveChatHistory(history.slice(0, 20));
+    renderChatHistory();
+}
+
+function renderChatHistory() {
+    const history = loadChatHistory();
+    const section = document.getElementById('pastChatsSection');
+    const list = document.getElementById('pastChatsList');
+    if (!section || !list) return;
+
+    if (history.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+    list.innerHTML = '';
+
+    history.forEach(item => {
+        const btn = document.createElement('button');
+        btn.className = 'past-chat-item';
+        btn.innerHTML = `
+            <span class="chat-item-icon">${item.videoUrl ? '🎬' : '📋'}</span>
+            <span class="chat-item-info">
+                <div class="chat-item-dest">${escapeHtml(item.destination)}</div>
+                <div class="chat-item-date">${item.date}</div>
+            </span>
+            ${item.videoUrl ? '<span class="chat-item-badge">Video</span>' : ''}
+        `;
+        btn.addEventListener('click', () => {
+            openPastChat(item);
+            if (isMobile()) closeSidebar();
+        });
+        list.appendChild(btn);
+    });
+}
+
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function openPastChat(item) {
+    if (!item.videoUrl) return;
+    const modal = document.getElementById('restoreChatModal');
+    const player = document.getElementById('restoreVideoPlayer');
+    const dlLink = document.getElementById('restoreDownloadLink');
+    const title = document.getElementById('restoreModalTitle');
+
+    title.textContent = `🎬 ${item.destination}`;
+    player.src = item.videoUrl;
+    dlLink.href = item.videoUrl;
+    dlLink.download = `${item.destination.replace(/\s+/g, '-').toLowerCase()}-trip.mp4`;
+    modal.style.display = 'flex';
+    player.play().catch(() => {});
+}
+
+function closePastChatModal() {
+    const modal = document.getElementById('restoreChatModal');
+    const player = document.getElementById('restoreVideoPlayer');
+    if (player) player.pause();
+    if (modal) modal.style.display = 'none';
+}
+
+// ---------------------------------------------------------------------------
 // New chat
 // ---------------------------------------------------------------------------
 function startNewChat() {
     if (videoModeEnabled) disableVideoMode();
+
+    // Archive the current session before wiping state
+    if (currentSessionId && currentItinerary) {
+        const dest = currentItinerary.destination
+            || (currentItinerary.rich_itinerary && currentItinerary.rich_itinerary.destination)
+            || 'Trip';
+        archiveCurrentSession(dest, currentVideoUrl);
+    }
 
     if (currentSessionId) {
         authFetch(`/api/session/${currentSessionId}`, { method: 'DELETE' }).catch(() => {});
@@ -655,14 +746,9 @@ function startNewChat() {
         viewItineraryBtn.style.display = 'none';
     }
     currentItinerary = null;
+    currentVideoUrl = null;
     hasGeneratedItinerary = false;
     pendingRegenerate = false;
-    const videoBar = document.getElementById('videoBar');
-    videoBar.style.display = 'none';
-    videoBar.dataset.videoUrl = '';
-    document.getElementById('finalVideoPlayer').src = '';
-    document.getElementById('downloadVideoLink').style.display = 'none';
-    document.querySelector('.container').style.height = '';
     updateHeaderStatus('Starting new session...');
     messageInput.focus();
 
@@ -838,8 +924,8 @@ function addConversationEndMessage() {
     content.className = 'message-content conversation-end-content';
     content.innerHTML = `
         <p class="conversation-end-text">
-            🌟 That's your trip all wrapped up! I hope you have an amazing journey.
-            Feel free to start a new chat whenever you're ready to plan another adventure.
+            🌟 That's your trip all wrapped up! Your video is saved above — you can download it any time.
+            Ready to plan another adventure?
         </p>
         <button class="btn btn-primary btn-small" id="endNewChatBtn">
             + Start New Chat
@@ -855,47 +941,37 @@ function addConversationEndMessage() {
 }
 
 function showVideoPlayer(url) {
-    const videoBar = document.getElementById('videoBar');
-    const player = document.getElementById('finalVideoPlayer');
-    const downloadLink = document.getElementById('downloadVideoLink');
-    player.src = url;
-    downloadLink.href = url;
-    downloadLink.style.display = 'inline-flex';
-    videoBar.style.display = 'block';
-    // Shrink the container so the chat input stays above the fixed bar
-    requestAnimationFrame(() => {
-        const barHeight = videoBar.offsetHeight;
-        document.querySelector('.container').style.height = `calc(100vh - ${barHeight}px)`;
-    });
-    // Store url so we can reopen it
-    videoBar.dataset.videoUrl = url;
-}
+    currentVideoUrl = url;
 
-function reopenVideoPlayer() {
-    const videoBar = document.getElementById('videoBar');
-    const url = videoBar.dataset.videoUrl;
-    if (url) showVideoPlayer(url);
-}
+    // Build an inline video card inside the chat
+    const cardDiv = document.createElement('div');
+    cardDiv.className = 'message assistant-message';
+    cardDiv.id = 'inlinVideoCard';
 
-function addShowVideoChip() {
-    const chipDiv = document.createElement('div');
-    chipDiv.className = 'message assistant-message';
-    chipDiv.id = 'showVideoChip';
+    const destName = currentItinerary
+        ? (currentItinerary.destination || (currentItinerary.rich_itinerary && currentItinerary.rich_itinerary.destination) || 'Your Trip')
+        : 'Your Trip';
+    const safeFilename = destName.replace(/\s+/g, '-').toLowerCase() + '-trip.mp4';
 
     const content = document.createElement('div');
-    content.className = 'message-content show-video-chip';
+    content.className = 'message-content';
+    content.style.padding = '0';
+    content.style.overflow = 'hidden';
+    content.style.maxWidth = '100%';
     content.innerHTML = `
-        <span>🎬 Video hidden —</span>
-        <button class="btn btn-secondary btn-small" id="showVideoBtn">Show Video</button>
+        <div class="video-card">
+            <div class="video-card-header">
+                <span class="video-card-title">🎬 ${escapeHtml(destName)} — Cinematic Video</span>
+                <div class="video-card-actions">
+                    <a href="${url}" download="${safeFilename}" class="btn-download">⬇ Download</a>
+                </div>
+            </div>
+            <video controls autoplay src="${url}">Your browser does not support the video tag.</video>
+        </div>
     `;
 
-    chipDiv.innerHTML = `<div class="message-avatar">🤖</div>`;
-    chipDiv.appendChild(content);
-    chatMessages.appendChild(chipDiv);
+    cardDiv.innerHTML = `<div class="message-avatar">🤖</div>`;
+    cardDiv.appendChild(content);
+    chatMessages.appendChild(cardDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
-
-    document.getElementById('showVideoBtn').addEventListener('click', () => {
-        chipDiv.remove();
-        reopenVideoPlayer();
-    });
 }
