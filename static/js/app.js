@@ -832,8 +832,9 @@ async function resumeSession(sessionId) {
                 if (vsRes.ok) {
                     const vsData = await vsRes.json();
                     if (vsData.status === 'compiled' && vsData.video_url) {
-                        // Video already exists — show player, no Accept button
+                        // Video already exists — show player and end-of-conversation message
                         showVideoPlayer(vsData.video_url);
+                        addConversationEndMessage();
                     } else if (vsData.status === 'processing') {
                         // Still compiling — show button in disabled/compiling state and resume polling
                         addCompileVideoButton(data.itinerary_id);
@@ -1168,6 +1169,11 @@ function addConversationEndMessage() {
     messageDiv.appendChild(content);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    // Disable chat input — conversation is complete
+    messageInput.disabled = true;
+    messageInput.placeholder = 'This conversation is complete. Start a new chat to plan another trip.';
+    sendBtn.disabled = true;
 
     document.getElementById('endNewChatBtn').addEventListener('click', startNewChat);
 }
