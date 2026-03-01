@@ -809,8 +809,20 @@ async function resumeSession(sessionId) {
         chatMessages.innerHTML = '';
         data.messages.forEach(msg => addMessageToChat(msg.role, msg.content));
 
-        // If an itinerary was previously generated, show the compile button again
+        // If an itinerary was previously generated, restore it in the panel
         if (data.itinerary_id) {
+            try {
+                const itinResponse = await authFetch(`/itinerary/${data.itinerary_id}`);
+                if (itinResponse.ok) {
+                    const itinData = await itinResponse.json();
+                    currentItinerary = itinData;
+                    const itineraryToShow = itinData.rich_itinerary || itinData;
+                    displayItinerary(itineraryToShow, itinData);
+                    hasGeneratedItinerary = true;
+                }
+            } catch (e) {
+                console.warn('Could not restore itinerary panel:', e);
+            }
             const existing = document.getElementById('compileVideoMessage');
             if (existing) existing.remove();
             addCompileVideoButton(data.itinerary_id);
