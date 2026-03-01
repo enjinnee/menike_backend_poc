@@ -1,3 +1,6 @@
+import logging
+import sys
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -7,6 +10,13 @@ from app.api import chat as chat_api
 from app.api import pages as pages_api
 from app.api import heygen as heygen_api
 from app.core.database import create_db_and_tables
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("manike")
 from app.models.milvus_schema import (
     get_experience_schema, get_tenant_schema, 
     get_image_vector_schema, get_clip_vector_schema
@@ -44,24 +54,26 @@ async def startup_event():
     # 1. Initialize PostgreSQL (SQLModel)
     try:
         create_db_and_tables()
-    except Exception:
-        pass # Handle in database logs
-    
+        logger.info("PostgreSQL tables initialised")
+    except Exception as e:
+        logger.error("Failed to initialise PostgreSQL: %s", e)
+
     # 2. Initialize Milvus
     try:
         exp_schema = get_experience_schema()
         milvus_client.create_collection(COLLECTION_NAME, exp_schema)
-        
+
         tenant_schema = get_tenant_schema()
         milvus_client.create_collection(TENANT_COLLECTION_NAME, tenant_schema)
-        
+
         img_schema = get_image_vector_schema()
         milvus_client.create_collection(IMAGE_COLLECTION_NAME, img_schema)
-        
+
         clip_schema = get_clip_vector_schema()
         milvus_client.create_collection(CLIP_COLLECTION_NAME, clip_schema)
-    except Exception:
-        pass
+        logger.info("Milvus collections initialised")
+    except Exception as e:
+        logger.error("Failed to initialise Milvus: %s", e)
 
 app.include_router(pages_api.router)
 app.include_router(auth.router)

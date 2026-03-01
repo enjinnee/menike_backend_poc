@@ -73,31 +73,38 @@ const exitVideoMode = document.getElementById('exitVideoMode');
 // ---------------------------------------------------------------------------
 // Initialize
 // ---------------------------------------------------------------------------
+const GREETING_TEXT =
+    "Hello! 👋 I'm so excited to meet you! I'm Manike, and I absolutely LOVE helping people " +
+    "discover amazing destinations and create unforgettable adventures! ✨\n\n" +
+    "Let's get started! First things first - what's your name? 😊";
+
 document.addEventListener('DOMContentLoaded', () => {
     if (!localStorage.getItem('access_token')) {
         window.location.href = '/auth/login';
         return;
     }
-    initializeSession();
+    // Show greeting locally — no DB session created until the user sends their first message.
+    addMessageToChat('assistant', GREETING_TEXT);
+    updateHeaderStatus('Ready to help');
     setupEventListeners();
     checkHeygenConfig();
-    renderChatHistory();
+    loadAndRenderSessions();
 });
 
 function initializeSession() {
-    updateHeaderStatus('Starting session...');
-    authFetch('/api/session/new', { method: 'POST' })
-        .then(response => response.json())
+    return authFetch('/api/session/new', { method: 'POST' })
+        .then(async response => {
+            const data = await response.json();
+            if (!response.ok) {
+                const msg = data?.detail || `Server error ${response.status}`;
+                throw new Error(msg);
+            }
+            return data;
+        })
         .then(data => {
             currentSessionId = data.session_id;
-            // Show greeting from AI in chat
-            chatMessages.innerHTML = '';
-            addMessageToChat('assistant', data.greeting);
-            updateHeaderStatus('Ready to help');
-        })
-        .catch(error => {
-            console.error('Error creating session:', error);
-            updateHeaderStatus('Failed to start session');
+            loadAndRenderSessions();
+            return data.session_id;
         });
 }
 
@@ -125,11 +132,25 @@ function setupEventListeners() {
     if (voiceButton) voiceButton.addEventListener('click', handleVoiceButtonClick);
     if (exitVideoMode) exitVideoMode.addEventListener('click', disableVideoMode);
 
-    // Restore-chat modal close
-    const closeRestoreBtn = document.getElementById('closeRestoreModal');
-    if (closeRestoreBtn) closeRestoreBtn.addEventListener('click', closePastChatModal);
-    const restoreBackdrop = document.getElementById('restoreModalBackdrop');
-    if (restoreBackdrop) restoreBackdrop.addEventListener('click', closePastChatModal);
+    // Resume-session modal
+    const closeResumeBtn = document.getElementById('closeResumeModal');
+    if (closeResumeBtn) closeResumeBtn.addEventListener('click', closeResumeModal);
+    const resumeBackdrop = document.getElementById('resumeModalBackdrop');
+    if (resumeBackdrop) resumeBackdrop.addEventListener('click', closeResumeModal);
+    const resumeConfirmBtn = document.getElementById('resumeConfirmBtn');
+    if (resumeConfirmBtn) resumeConfirmBtn.addEventListener('click', confirmResumeSession);
+    const resumeCancelBtn = document.getElementById('resumeCancelBtn');
+    if (resumeCancelBtn) resumeCancelBtn.addEventListener('click', closeResumeModal);
+
+    // Delete-session modal
+    const closeDeleteBtn = document.getElementById('closeDeleteModal');
+    if (closeDeleteBtn) closeDeleteBtn.addEventListener('click', closeDeleteModal);
+    const deleteBackdrop = document.getElementById('deleteModalBackdrop');
+    if (deleteBackdrop) deleteBackdrop.addEventListener('click', closeDeleteModal);
+    const deleteCancelBtn = document.getElementById('deleteCancelBtn');
+    if (deleteCancelBtn) deleteCancelBtn.addEventListener('click', closeDeleteModal);
+    const deleteConfirmBtn = document.getElementById('deleteConfirmBtn');
+    if (deleteConfirmBtn) deleteConfirmBtn.addEventListener('click', confirmDeleteSession);
 
     // Mobile sidebar toggle
     if (sidebarToggle) {
@@ -191,7 +212,7 @@ async function toggleVideoMode() {
 }
 
 async function enableVideoMode() {
-    if (!currentSessionId) { alert('Please wait for session to initialize'); return; }
+    if (!currentSessionId) { updateHeaderStatus('Please wait for session to initialize'); return; }
 
     videoModeToggle.disabled = true;
     videoModeToggle.innerHTML = '<span class="video-icon">...</span> Loading...';
@@ -207,7 +228,7 @@ async function enableVideoMode() {
             onListeningEnd: () => { if (voiceButton) voiceButton.classList.remove('listening'); if (interimTranscript) interimTranscript.textContent = ''; },
             onError: (error) => {
                 console.error('Voice input error:', error);
-                if (error === 'microphone-denied') { alert('Microphone access required for video mode.'); disableVideoMode(); }
+                if (error === 'microphone-denied') { updateHeaderStatus('Microphone access required for video mode.'); disableVideoMode(); }
             }
         });
 
@@ -226,7 +247,7 @@ async function enableVideoMode() {
             },
             onTalkingStart: () => { avatarStatus.textContent = 'Manike is speaking...'; if (voiceStatus) voiceStatus.textContent = 'Avatar speaking...'; if (voiceInputManager) voiceInputManager.pause(); },
             onTalkingEnd: () => { avatarStatus.textContent = 'Listening to you...'; if (voiceStatus) voiceStatus.textContent = 'Speak now...'; if (voiceInputManager && videoModeEnabled) voiceInputManager.resume(); },
-            onError: (error) => { console.error('Avatar error:', error); alert('Failed to initialize video avatar.'); disableVideoMode(); },
+            onError: (error) => { console.error('Avatar error:', error); updateHeaderStatus('Video avatar unavailable. Please try again.'); disableVideoMode(); },
             onDisconnect: () => { console.log('Avatar disconnected'); disableVideoMode(); }
         });
 
@@ -240,7 +261,7 @@ async function enableVideoMode() {
         videoModeToggle.disabled = false;
     } catch (error) {
         console.error('Failed to enable video mode:', error);
-        alert('Failed to enable video mode: ' + error.message);
+        updateHeaderStatus('Video mode unavailable. Please try again or contact the administrator.');
         disableVideoMode();
     }
 }
@@ -291,6 +312,7 @@ async function handleVoiceTranscript(transcript) {
     if (voiceStatus) voiceStatus.textContent = 'Processing your response...';
 
     try {
+        if (!currentSessionId) await initializeSession();
         const response = await authFetch('/api/chat/voice', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -331,7 +353,7 @@ async function handleVoiceTranscript(transcript) {
 // ---------------------------------------------------------------------------
 function sendMessage() {
     const message = messageInput.value.trim();
-    if (!message || !currentSessionId) return;
+    if (!message) return;
 
     messageInput.disabled = true;
     sendBtn.disabled = true;
@@ -339,16 +361,26 @@ function sendMessage() {
     messageInput.value = '';
     showTypingIndicator();
 
-    authFetch('/api/chat/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: currentSessionId, message: message })
+    // If no session exists yet, create one before sending the first message.
+    const sessionReady = currentSessionId
+        ? Promise.resolve(currentSessionId)
+        : initializeSession();
+
+    sessionReady
+        .then(sessionId => authFetch('/api/chat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, message: message })
+        }))
+    .then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(`http_${response.status}`);
+        return data;
     })
-    .then(response => response.json())
     .then(data => {
         removeTypingIndicator();
         if (data.error) {
-            addMessageToChat('assistant', `Error: ${data.error}`);
+            addMessageToChat('assistant', 'Sorry, something went wrong. Please try again.');
         } else {
             addMessageToChat('assistant', data.response);
             // Handle auto-generation for both first-time and updates
@@ -357,8 +389,8 @@ function sendMessage() {
     })
     .catch(error => {
         removeTypingIndicator();
-        console.error('Error:', error);
-        addMessageToChat('assistant', 'Sorry, there was an error. Please try again.');
+        console.error('Send message error:', error);
+        addMessageToChat('assistant', 'Sorry, something went wrong. Please try again.');
     })
     .finally(() => {
         messageInput.disabled = false;
@@ -500,9 +532,9 @@ function generateItinerary() {
         }
     })
     .catch(error => {
-        console.error('Error:', error);
-        addMessageToChat('assistant', `⚠️ Sorry, something went wrong generating your itinerary. Please try again.`);
-        updateHeaderStatus('Generation failed');
+        console.error('Itinerary generation error:', error);
+        addMessageToChat('assistant', '⚠️ Sorry, something went wrong generating your itinerary. Please try again.');
+        updateHeaderStatus('Generation failed. Please try again.');
     })
     .finally(() => {
         isGenerating = false;
@@ -629,111 +661,261 @@ function exportItinerary() {
 }
 
 // ---------------------------------------------------------------------------
-// Chat history (localStorage)
+// Session sidebar — backend-persisted chat history
 // ---------------------------------------------------------------------------
-const CHAT_HISTORY_KEY = 'manike_chat_history';
-
-function loadChatHistory() {
-    try {
-        return JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) || '[]');
-    } catch (_) {
-        return [];
-    }
-}
-
-function saveChatHistory(history) {
-    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(history));
-}
-
-function archiveCurrentSession(destination, videoUrl) {
-    const history = loadChatHistory();
-    history.unshift({
-        sessionId: currentSessionId,
-        destination: destination || 'Trip',
-        videoUrl: videoUrl || null,
-        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-    });
-    // Keep max 20 entries
-    saveChatHistory(history.slice(0, 20));
-    renderChatHistory();
-}
-
-function renderChatHistory() {
-    const history = loadChatHistory();
-    const section = document.getElementById('pastChatsSection');
-    const list = document.getElementById('pastChatsList');
-    if (!section || !list) return;
-
-    if (history.length === 0) {
-        section.style.display = 'none';
-        return;
-    }
-
-    section.style.display = 'block';
-    list.innerHTML = '';
-
-    history.forEach(item => {
-        const btn = document.createElement('button');
-        btn.className = 'past-chat-item';
-        btn.innerHTML = `
-            <span class="chat-item-icon">${item.videoUrl ? '🎬' : '📋'}</span>
-            <span class="chat-item-info">
-                <div class="chat-item-dest">${escapeHtml(item.destination)}</div>
-                <div class="chat-item-date">${item.date}</div>
-            </span>
-            ${item.videoUrl ? '<span class="chat-item-badge">Video</span>' : ''}
-        `;
-        btn.addEventListener('click', () => {
-            openPastChat(item);
-            if (isMobile()) closeSidebar();
-        });
-        list.appendChild(btn);
-    });
-}
 
 function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-function openPastChat(item) {
-    if (!item.videoUrl) return;
-    const modal = document.getElementById('restoreChatModal');
-    const player = document.getElementById('restoreVideoPlayer');
-    const dlLink = document.getElementById('restoreDownloadLink');
-    const title = document.getElementById('restoreModalTitle');
-
-    title.textContent = `🎬 ${item.destination}`;
-    player.src = item.videoUrl;
-    dlLink.href = item.videoUrl;
-    dlLink.download = `${item.destination.replace(/\s+/g, '-').toLowerCase()}-trip.mp4`;
-    modal.style.display = 'flex';
-    player.play().catch(() => {});
+function formatSessionDate(isoString) {
+    const d = new Date(isoString);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function closePastChatModal() {
-    const modal = document.getElementById('restoreChatModal');
-    const player = document.getElementById('restoreVideoPlayer');
-    if (player) player.pause();
+async function loadAndRenderSessions() {
+    try {
+        const response = await authFetch('/api/chat/sessions');
+        if (!response.ok) return;
+        const sessions = await response.json();
+
+        const mySection = document.getElementById('myChatsSection');
+        const myList = document.getElementById('myChatsList');
+        const sharedSection = document.getElementById('sharedChatsSection');
+        const sharedList = document.getElementById('sharedChatsList');
+        if (!mySection || !myList || !sharedSection || !sharedList) return;
+
+        const mine = sessions.filter(s => s.is_owner);
+        const shared = sessions.filter(s => !s.is_owner);
+
+        mySection.style.display = 'block';
+        myList.innerHTML = '';
+        if (mine.length > 0) {
+            mine.forEach(s => myList.appendChild(buildSessionItem(s)));
+        } else {
+            myList.innerHTML = '<p class="empty-chats-msg">No chats yet. Start a new chat above.</p>';
+        }
+
+        sharedSection.style.display = 'block';
+        sharedList.innerHTML = '';
+        if (shared.length > 0) {
+            shared.forEach(s => sharedList.appendChild(buildSessionItem(s)));
+        } else {
+            sharedList.innerHTML = '<p class="empty-chats-msg">No chats have been shared with you yet.</p>';
+        }
+    } catch (e) {
+        console.error('Failed to load chat sessions:', e);
+    }
+}
+
+function buildSessionItem(session) {
+    const item = document.createElement('div');
+    item.className = 'past-chat-item';
+    item.dataset.sessionId = session.session_id;
+
+    const shareControl = session.is_owner
+        ? `<button class="share-toggle-btn${session.is_shared ? ' shared' : ''}"
+               title="${session.is_shared ? 'Unshare' : 'Share with team'}"
+               data-session="${session.session_id}"
+               data-shared="${session.is_shared}">
+               ${session.is_shared ? '🔗' : '🔒'}
+           </button>
+           <button class="delete-chat-btn" title="Delete chat" data-session="${session.session_id}">🗑</button>`
+        : `<span class="chat-item-badge">Shared</span>`;
+
+    item.innerHTML = `
+        <span class="chat-item-icon">${session.itinerary_id ? '🎬' : '💬'}</span>
+        <span class="chat-item-info">
+            <div class="chat-item-dest">${escapeHtml(session.title)}</div>
+            <div class="chat-item-date">${formatSessionDate(session.updated_at)}</div>
+        </span>
+        ${shareControl}
+    `;
+
+    // Click item body → open resume confirm (skip if the share/delete button was clicked)
+    item.addEventListener('click', (e) => {
+        if (e.target.closest('.share-toggle-btn') || e.target.closest('.delete-chat-btn')) return;
+        openResumeConfirm(session);
+        if (isMobile()) closeSidebar();
+    });
+
+    // Share toggle
+    const shareBtn = item.querySelector('.share-toggle-btn');
+    if (shareBtn) {
+        shareBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const currentlyShared = shareBtn.dataset.shared === 'true';
+            toggleShareSession(session.session_id, currentlyShared, shareBtn);
+        });
+    }
+
+    // Delete button
+    const deleteBtn = item.querySelector('.delete-chat-btn');
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openDeleteConfirm(session);
+        });
+    }
+
+    return item;
+}
+
+// ---------------------------------------------------------------------------
+// Resume session modal
+// ---------------------------------------------------------------------------
+let _pendingResumeSession = null;
+
+function openResumeConfirm(session) {
+    _pendingResumeSession = session;
+    document.getElementById('resumeModalTitle').textContent = `Resume: ${escapeHtml(session.title)}`;
+    document.getElementById('resumeModalDesc').textContent =
+        `Resume your conversation about "${escapeHtml(session.title)}"? Your current chat will be replaced.`;
+    document.getElementById('resumeConfirmModal').style.display = 'flex';
+}
+
+function closeResumeModal() {
+    const modal = document.getElementById('resumeConfirmModal');
     if (modal) modal.style.display = 'none';
+    _pendingResumeSession = null;
+}
+
+async function confirmResumeSession() {
+    if (!_pendingResumeSession) return;
+    const session = _pendingResumeSession;
+    closeResumeModal();
+    await resumeSession(session.session_id);
+}
+
+async function resumeSession(sessionId) {
+    updateHeaderStatus('Loading session...');
+    try {
+        const response = await authFetch(`/api/session/${sessionId}/resume`, { method: 'POST' });
+        if (!response.ok) {
+            await response.json().catch(() => ({}));
+            updateHeaderStatus('Could not load this chat. Please try again.');
+            return;
+        }
+        const data = await response.json();
+
+        // Replace current session state
+        currentSessionId = data.session_id;
+        currentItinerary = null;
+        currentVideoUrl = null;
+        hasGeneratedItinerary = data.requirements_complete || false;
+        pendingRegenerate = false;
+
+        // Render full conversation history
+        chatMessages.innerHTML = '';
+        data.messages.forEach(msg => addMessageToChat(msg.role, msg.content));
+
+        // If an itinerary was previously generated, show the compile button again
+        if (data.itinerary_id) {
+            const existing = document.getElementById('compileVideoMessage');
+            if (existing) existing.remove();
+            addCompileVideoButton(data.itinerary_id);
+        }
+
+        updateHeaderStatus(`Resumed: ${data.title}`);
+        loadAndRenderSessions();
+    } catch (e) {
+        console.error('Resume error', e);
+        updateHeaderStatus('Could not load this chat. Please try again.');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Share toggle
+// ---------------------------------------------------------------------------
+async function toggleShareSession(sessionId, currentlyShared, btn) {
+    const newShared = !currentlyShared;
+    try {
+        const response = await authFetch(`/api/session/${sessionId}/share`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_shared: newShared }),
+        });
+        if (!response.ok) {
+            console.error('Share toggle failed: status=%d', response.status);
+            return;
+        }
+        // Optimistic UI update
+        btn.dataset.shared = String(newShared);
+        btn.classList.toggle('shared', newShared);
+        btn.title = newShared ? 'Unshare' : 'Share with team';
+        btn.textContent = newShared ? '🔗' : '🔒';
+    } catch (e) {
+        console.error('Share toggle error', e);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Delete session modal
+// ---------------------------------------------------------------------------
+let _pendingDeleteSession = null;
+
+function openDeleteConfirm(session) {
+    _pendingDeleteSession = session;
+    const hasVideo = !!session.itinerary_id;
+    document.getElementById('deleteModalDesc').textContent =
+        `Are you sure you want to delete "${escapeHtml(session.title)}"?` +
+        (hasVideo ? ' The compiled video will also be deleted.' : '') +
+        ' This cannot be undone.';
+    document.getElementById('deleteConfirmModal').style.display = 'flex';
+}
+
+function closeDeleteModal() {
+    const modal = document.getElementById('deleteConfirmModal');
+    if (modal) modal.style.display = 'none';
+    _pendingDeleteSession = null;
+}
+
+async function confirmDeleteSession() {
+    if (!_pendingDeleteSession) return;
+    const session = _pendingDeleteSession;
+    closeDeleteModal();
+
+    try {
+        const response = await authFetch(`/api/session/${session.session_id}`, { method: 'DELETE' });
+        if (!response.ok) {
+            console.error('Delete failed: status=%d', response.status);
+            return;
+        }
+        // If the deleted session is the active one, start fresh
+        if (currentSessionId === session.session_id) {
+            currentSessionId = null;
+            currentItinerary = null;
+            currentVideoUrl = null;
+            hasGeneratedItinerary = false;
+            pendingRegenerate = false;
+            chatMessages.innerHTML = '';
+            itineraryPanel.style.display = 'none';
+            addMessageToChat('assistant', GREETING_TEXT);
+            updateHeaderStatus('Ready to help');
+        }
+        loadAndRenderSessions();
+    } catch (e) {
+        console.error('Delete session error', e);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // New chat
 // ---------------------------------------------------------------------------
 function startNewChat() {
+    // If the current session has no user messages, don't create a new one.
+    const hasUserMessages = chatMessages.querySelector('.user-message') !== null;
+    if (!hasUserMessages) return;
+
     if (videoModeEnabled) disableVideoMode();
 
-    // Archive the current session before wiping state
-    if (currentSessionId && currentItinerary) {
-        const dest = currentItinerary.destination
-            || (currentItinerary.rich_itinerary && currentItinerary.rich_itinerary.destination)
-            || 'Trip';
-        archiveCurrentSession(dest, currentVideoUrl);
-    }
-
-    if (currentSessionId) {
-        authFetch(`/api/session/${currentSessionId}`, { method: 'DELETE' }).catch(() => {});
-    }
+    // Keep the current session in the DB — it will appear in "My Chats" sidebar.
+    // Just drop the local reference so a fresh session is created.
+    currentSessionId = null;
+    currentItinerary = null;
+    currentVideoUrl = null;
+    hasGeneratedItinerary = false;
+    pendingRegenerate = false;
 
     chatMessages.innerHTML = '';
     messageInput.value = '';
@@ -745,14 +927,10 @@ function startNewChat() {
         viewItineraryBtn.classList.remove('visible');
         viewItineraryBtn.style.display = 'none';
     }
-    currentItinerary = null;
-    currentVideoUrl = null;
-    hasGeneratedItinerary = false;
-    pendingRegenerate = false;
-    updateHeaderStatus('Starting new session...');
+    // Show greeting locally — session created in DB only when user sends first message.
+    addMessageToChat('assistant', GREETING_TEXT);
+    updateHeaderStatus('Ready to help');
     messageInput.focus();
-
-    initializeSession();
 }
 
 function updateHeaderStatus(status) {
@@ -856,12 +1034,12 @@ async function compileAndShowVideo(itineraryId, btn) {
     try {
         const res = await authFetch(`/itinerary/${itineraryId}/compile-video`, { method: 'POST' });
         if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
+            await res.json().catch(() => {});
             removeStatusMsg();
             if (res.status === 400) {
                 addMessageToChat('assistant', 'ℹ️ No cinematic clips were matched for this itinerary — video unavailable.');
             } else {
-                addMessageToChat('assistant', `⚠️ Could not start video compilation: ${err.detail || 'Unknown error'}.`);
+                addMessageToChat('assistant', '⚠️ Could not start video compilation. Please try again or contact the administrator.');
             }
             resetBtn();
             return;
@@ -900,7 +1078,7 @@ async function compileAndShowVideo(itineraryId, btn) {
             } else if (data.status === 'failed') {
                 clearInterval(pollInterval);
                 removeStatusMsg();
-                addMessageToChat('assistant', `⚠️ Video compilation failed: ${data.error || 'Unknown error'}. You can still view your itinerary in the panel.`);
+                addMessageToChat('assistant', '⚠️ Video compilation failed. You can still view your itinerary in the panel.');
                 resetBtn();
 
             }
@@ -909,7 +1087,7 @@ async function compileAndShowVideo(itineraryId, btn) {
             clearInterval(pollInterval);
             removeStatusMsg();
             console.error('Video status poll error:', e);
-            addMessageToChat('assistant', '⚠️ Lost contact while checking video status. Please refresh to see if it completed.');
+            addMessageToChat('assistant', '⚠️ Lost contact while checking video status. Please refresh the page to see if it completed.');
             resetBtn();
         }
     }, 3000);
@@ -966,7 +1144,16 @@ function showVideoPlayer(url) {
                     <a href="${url}" download="${safeFilename}" class="btn-download">⬇ Download</a>
                 </div>
             </div>
-            <video controls autoplay src="${url}">Your browser does not support the video tag.</video>
+            <div class="video-card-player-wrap">
+                <video src="${url}" preload="metadata">Your browser does not support the video tag.</video>
+                <div class="video-play-overlay" id="videoPlayOverlay">
+                    <div class="play-circle">
+                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <polygon points="5,3 19,12 5,21"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
         </div>
     `;
 
@@ -974,4 +1161,13 @@ function showVideoPlayer(url) {
     cardDiv.appendChild(content);
     chatMessages.appendChild(cardDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    // Wire up play overlay
+    const overlay = content.querySelector('#videoPlayOverlay');
+    const video = content.querySelector('video');
+    overlay.addEventListener('click', () => {
+        overlay.classList.add('hidden');
+        video.controls = true;
+        video.play().catch(() => {});
+    });
 }

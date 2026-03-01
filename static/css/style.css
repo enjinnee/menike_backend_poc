@@ -82,6 +82,14 @@ html, body {
     margin-bottom: 12px;
 }
 
+.empty-chats-msg {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.45);
+    font-style: italic;
+    padding: 6px 4px;
+    margin: 0;
+}
+
 .sidebar-text {
     font-size: 13px;
     line-height: 1.6;
@@ -235,6 +243,16 @@ html, body {
 
 .btn-secondary:hover {
     background-color: var(--bg-light);
+}
+
+.btn-danger {
+    background-color: #e53e3e;
+    color: white;
+    border: none;
+}
+
+.btn-danger:hover {
+    background-color: #c53030;
 }
 
 .btn-success {
@@ -880,11 +898,67 @@ html, body {
     transform: translateY(-1px);
 }
 
-.video-card video {
+.video-card-player-wrap {
+    position: relative;
     width: 100%;
-    max-height: 300px;
-    display: block;
     background: #000;
+    overflow: hidden;
+    line-height: 0;
+}
+
+.video-card-player-wrap video {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 38vh;
+    object-fit: contain;
+}
+
+/* Big play overlay */
+.video-play-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.video-play-overlay:hover {
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.video-play-overlay .play-circle {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: rgba(108, 99, 255, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 20px rgba(108, 99, 255, 0.5);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.video-play-overlay:hover .play-circle {
+    transform: scale(1.1);
+    box-shadow: 0 6px 28px rgba(108, 99, 255, 0.7);
+}
+
+.video-play-overlay .play-circle svg {
+    width: 28px;
+    height: 28px;
+    margin-left: 4px; /* optical centre for triangle */
+    fill: white;
+}
+
+.video-play-overlay.hidden {
+    display: none;
 }
 
 /* ========================================
@@ -945,6 +1019,51 @@ html, body {
     border-radius: 4px;
     padding: 2px 5px;
     flex-shrink: 0;
+}
+
+.past-chat-item {
+    cursor: pointer;
+}
+
+.share-toggle-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 4px;
+    border-radius: 4px;
+    opacity: 0.5;
+    transition: opacity 0.15s, background 0.15s;
+    flex-shrink: 0;
+    line-height: 1;
+}
+
+.share-toggle-btn:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.share-toggle-btn.shared {
+    opacity: 1;
+    color: #6ee7b7;
+}
+
+.delete-chat-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    opacity: 0.5;
+    flex-shrink: 0;
+    line-height: 1;
+    color: #fc8181;
+}
+
+.delete-chat-btn:hover {
+    opacity: 1;
+    background: rgba(229, 62, 62, 0.2);
 }
 
 /* ========================================

@@ -116,3 +116,35 @@ class FinalVideo(SQLModel, table=True):
     duration: Optional[float] = None        # total seconds
     status: str = "compiled"                # compiled, failed
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# ChatSession — persisted chat sessions (one per conversation)
+# ---------------------------------------------------------------------------
+class ChatSession(SQLModel, table=True):
+    __tablename__ = "chat_session"
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    title: str = Field(default="New Chat")          # set to destination once known
+    is_shared: bool = Field(default=False, index=True)
+    is_deleted: bool = Field(default=False)          # soft-delete
+    requirements_json: Optional[str] = None          # JSON snapshot of user_requirements
+    itinerary_id: Optional[str] = Field(default=None, foreign_key="itinerary.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# ChatMessage — individual messages within a session
+# ---------------------------------------------------------------------------
+class ChatMessage(SQLModel, table=True):
+    __tablename__ = "chat_message"
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    session_id: str = Field(foreign_key="chat_session.id", index=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)  # denorm for isolation
+    role: str                                        # "user" or "assistant"
+    content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)

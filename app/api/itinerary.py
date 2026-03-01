@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import get_current_tenant_id, get_current_user
 from app.core.database import get_session
 from app.models.sql_models import (
-    Itinerary, ItineraryActivity, ImageLibrary, CinematicClip, FinalVideo, User
+    Itinerary, ItineraryActivity, ImageLibrary, CinematicClip, FinalVideo, User, ChatSession
 )
 from app.services.generators import ItineraryGenerator
 from app.services.matcher import match_image, match_clip
@@ -87,7 +87,7 @@ async def generate_itinerary(
         # ----------------------------------------------------------------
         # AI-POWERED CHAT-BASED FLOW
         # ----------------------------------------------------------------
-        manager = chat_session_store.get_manager(req.session_id)
+        manager = chat_session_store.get_manager(req.session_id, db=session, provider=ProviderFactory.create())
         if not manager:
             raise HTTPException(
                 status_code=404,
@@ -230,11 +230,20 @@ async def generate_itinerary(
         session.add(itinerary)
         session.commit()
 
+    # Link the itinerary back to its originating chat session
+    if req.session_id:
+        db_chat = session.get(ChatSession, req.session_id)
+        if db_chat:
+            db_chat.itinerary_id = itinerary.id
+            db_chat.updated_at = datetime.utcnow()
+            session.add(db_chat)
+            session.commit()
+
     # Mark the chat session as generated so has_changes resets to False.
     # Without this, every subsequent user message would set has_changes=True
     # and trigger an unnecessary auto-regeneration on the frontend.
     if req.session_id:
-        manager = chat_session_store.get_manager(req.session_id)
+        manager = chat_session_store.get_manager(req.session_id, db=session, provider=ProviderFactory.create())
         if manager:
             manager.mark_generated()
 

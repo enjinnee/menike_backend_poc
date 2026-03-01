@@ -23,10 +23,16 @@
                 + New Chat
             </button>
 
-            <!-- Past Chats -->
-            <div class="sidebar-section" id="pastChatsSection" style="display:none;">
-                <h3>Past Chats</h3>
-                <div id="pastChatsList" class="past-chats-list"></div>
+            <!-- My Chats -->
+            <div class="sidebar-section" id="myChatsSection">
+                <h3>My Chats</h3>
+                <div id="myChatsList" class="past-chats-list"></div>
+            </div>
+
+            <!-- Shared With Me -->
+            <div class="sidebar-section" id="sharedChatsSection">
+                <h3>Shared With Me</h3>
+                <div id="sharedChatsList" class="past-chats-list"></div>
             </div>
 
             <div class="sidebar-section">
@@ -149,21 +155,38 @@
         </aside>
     </div>
 
-    <!-- Past Chat Restore Modal -->
-    <div id="restoreChatModal" class="restore-modal" style="display:none;">
-        <div class="restore-modal-backdrop" id="restoreModalBackdrop"></div>
-        <div class="restore-modal-card">
+    <!-- Resume Session Confirmation Modal -->
+    <div id="resumeConfirmModal" class="restore-modal" style="display:none;">
+        <div class="restore-modal-backdrop" id="resumeModalBackdrop"></div>
+        <div class="restore-modal-card" style="width: min(420px, 90vw);">
             <div class="restore-modal-header">
-                <h3 id="restoreModalTitle">Past Trip</h3>
-                <button class="close-btn" id="closeRestoreModal">×</button>
+                <h3 id="resumeModalTitle">Resume Chat</h3>
+                <button class="close-btn" id="closeResumeModal">×</button>
             </div>
-            <div class="restore-modal-body">
-                <video id="restoreVideoPlayer" class="restore-video-player" controls>
-                    Your browser does not support the video tag.
-                </video>
-                <div class="restore-modal-actions">
-                    <a id="restoreDownloadLink" href="#" download="cinematic-trip.mp4" class="btn btn-primary">⬇ Download Video</a>
-                </div>
+            <div class="restore-modal-body" style="padding: 20px;">
+                <p id="resumeModalDesc" style="color: rgba(255,255,255,0.85); font-size: 14px; line-height: 1.6;"></p>
+            </div>
+            <div class="restore-modal-actions">
+                <button class="btn btn-secondary btn-small" id="resumeCancelBtn">Cancel</button>
+                <button class="btn btn-primary btn-small" id="resumeConfirmBtn">Resume Chat</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Chat Confirmation Modal -->
+    <div id="deleteConfirmModal" class="restore-modal" style="display:none;">
+        <div class="restore-modal-backdrop" id="deleteModalBackdrop"></div>
+        <div class="restore-modal-card" style="width: min(420px, 90vw);">
+            <div class="restore-modal-header">
+                <h3>Delete Chat</h3>
+                <button class="close-btn" id="closeDeleteModal">×</button>
+            </div>
+            <div class="restore-modal-body" style="padding: 20px;">
+                <p id="deleteModalDesc" style="color: rgba(255,255,255,0.85); font-size: 14px; line-height: 1.6;"></p>
+            </div>
+            <div class="restore-modal-actions">
+                <button class="btn btn-secondary btn-small" id="deleteCancelBtn">Cancel</button>
+                <button class="btn btn-danger btn-small" id="deleteConfirmBtn">Delete</button>
             </div>
         </div>
     </div>
