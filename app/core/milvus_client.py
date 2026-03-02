@@ -31,7 +31,7 @@ class MilvusClient:
                     index_params = {
                         "metric_type": "COSINE",
                         "index_type": "HNSW",
-                        "params": {"M": 8, "efConstruction": 64}
+                        "params": {"M": 16, "efConstruction": 200}
                     }
                     collection.create_index(field_name=field.name, index_params=index_params)
             collection.load()

@@ -16,13 +16,13 @@ from typing import Optional, Set
 from app.core.milvus_client import milvus_client
 from app.models.sql_models import ImageLibrary, CinematicClip
 from app.providers.factory import ProviderFactory
-from app.services.embedding import generate_embedding
+from app.services.embedding import generate_query_embedding
 
 logger = logging.getLogger(__name__)
 
 # Candidates with a cosine similarity below this threshold are rejected in the
 # fallback path (LLM path uses its own score threshold below).
-MIN_MATCH_SCORE = float(0.10)
+MIN_MATCH_SCORE = float(0.50)
 
 # LLM relevance thresholds — candidates scoring below these are not selected.
 LLM_MIN_IMAGE_SCORE = 5
@@ -40,11 +40,16 @@ Return ONLY valid JSON — a list of objects with "id" and "score" fields.
 Example: [{{"id": 0, "score": 8}}, {{"id": 1, "score": 3}}]
 
 Scoring guide:
-- 9-10: Exact location match (same landmark, same place name)
-- 7-8: Same landmark type at a different but related location
-- 5-6: Related visual category (e.g. heritage building, coastal view)
-- 1-4: Loosely related visual concept
-- 0: Unrelated
+- 9-10: Exact match — same specific landmark AND same city/location as the activity
+- 6-8:  Same or adjacent site within the same city/area as the activity
+- 3-5:  Same visual category (e.g. temple, beach, fort) but DIFFERENT city or province
+- 1-2:  Loosely related visual concept, clearly wrong location
+- 0:    Completely unrelated
+
+CRITICAL RULE: If the candidate image's location does not match the activity's location/city,
+the maximum score is 5. Never score 6+ for a cross-location match, even if the visual
+category is identical (e.g. a Hindu temple in Trincomalee is NOT a good match for a
+Hindu temple in Kataragama — cap it at 5).
 
 Return scores for ALL {n_candidates} images. No text outside the JSON array."""
 
@@ -60,11 +65,15 @@ Return ONLY valid JSON — a list of objects with "id" and "score" fields.
 Example: [{{"id": 0, "score": 8}}, {{"id": 1, "score": 3}}]
 
 Scoring guide:
-- 9-10: Exact location match (same landmark or place shown)
-- 7-8: Same landmark type at a different but related location
-- 5-6: Related visual category (e.g. coastal, heritage, adventure)
-- 1-4: Loosely related visual concept
-- 0: Unrelated
+- 9-10: Exact match — same specific landmark AND same city/location as the activity
+- 6-8:  Same or adjacent site within the same city/area as the activity
+- 3-5:  Same visual category (e.g. coastal, heritage, adventure) but DIFFERENT city or province
+- 1-2:  Loosely related visual concept, clearly wrong location
+- 0:    Completely unrelated
+
+CRITICAL RULE: If the candidate clip's location does not match the activity's location/city,
+the maximum score is 5. Never score 6+ for a cross-location match, even if the visual
+category is identical.
 
 Return scores for ALL {n_candidates} clips. No text outside the JSON array."""
 
@@ -199,7 +208,7 @@ def match_image(
     Find the best matching image from Milvus by semantic similarity + LLM scoring.
     query_text: "Visit Galle Fort, heritage, sunset"
     """
-    embedding = generate_embedding(query_text)
+    embedding = generate_query_embedding(query_text)
     results = milvus_client.search_images(tenant_id, embedding, limit=10)
     blocked = exclude_ids or set()
 
@@ -231,7 +240,7 @@ def match_clip(
     Find the best matching cinematic clip from Milvus by semantic similarity + LLM scoring.
     Skips any clip IDs in exclude_ids to ensure activity-level diversity.
     """
-    embedding = generate_embedding(query_text)
+    embedding = generate_query_embedding(query_text)
     results = milvus_client.search_clips(tenant_id, embedding, limit=10)
     blocked = exclude_ids or set()
 

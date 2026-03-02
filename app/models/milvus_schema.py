@@ -1,6 +1,6 @@
 from pymilvus import FieldSchema, CollectionSchema, DataType
 
-EMBEDDING_DIM = 128  # Must match app/services/embedding.py
+EMBEDDING_DIM = 768  # Must match app/services/embedding.py (Gemini text-embedding-004)
 
 
 def get_experience_schema():

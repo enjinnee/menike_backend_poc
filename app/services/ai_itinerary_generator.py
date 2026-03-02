@@ -89,7 +89,9 @@ Instructions:
 6. Include rides/transportation between locations when applicable
 7. Use reasonable cost estimates based on the user's budget
 8. Make activities relevant to the user's stated preferences
-9. Each activity MUST have a "keywords" field with 4-8 relevant comma-separated keywords for image/video matching
+9. Each activity MUST have a "keywords" field with 4-8 comma-separated keywords for image/video matching.
+   ALWAYS include: (a) the specific site name e.g. "kiri vehera", (b) the exact city/town e.g. "polonnaruwa",
+   (c) the visual category e.g. "stupa". Example: "kiri vehera,stupa,polonnaruwa,buddhist,ancient,pilgrimage"
 10. Ensure the itinerary respects any special requirements mentioned"""
 
 
