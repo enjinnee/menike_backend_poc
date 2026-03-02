@@ -196,11 +196,15 @@ if [[ "$MODE" == "redeploy" ]]; then
         fi
         echo "    OK: linux/amd64 confirmed."
 
-        echo "── Updating Cloud Run job image..."
+        echo "── Updating Cloud Run job image and env vars..."
+        PIXABAY_KEY="${PIXABAY_API_KEY:-}"
+        PEXELS_KEY="${PEXELS_API_KEY:-}"
+        ENABLE_PEXELS="${ENABLE_PEXELS_FALLBACK:-true}"
         gcloud run jobs update manike-video-compiler \
             --region="$REGION" \
             --project="$PROJECT" \
-            --image="${IMAGE_URI}"
+            --image="${IMAGE_URI}" \
+            --update-env-vars="PIXABAY_API_KEY=${PIXABAY_KEY},PEXELS_API_KEY=${PEXELS_KEY},ENABLE_PEXELS_FALLBACK=${ENABLE_PEXELS}"
 
         echo "    Worker image updated: ${IMAGE_URI}"
     fi
@@ -526,6 +530,12 @@ GCS_BASE_PREFIX=experience-images
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
+# Video compiler: "local" runs FFmpeg on this VM; "cloudrun" dispatches async Cloud Run Job
+VIDEO_COMPILER=local
+# Royalty-free clip sources (multi-source, LLM-scored)
+PIXABAY_API_KEY=${PIXABAY_API_KEY:-}
+PEXELS_API_KEY=${PEXELS_API_KEY:-}
+ENABLE_PEXELS_FALLBACK=true
 ENVEOF
     chown manike:manike /home/manike/menike_backend_poc/.env
     chmod 600 /home/manike/menike_backend_poc/.env
@@ -548,6 +558,10 @@ GCS_BASE_PREFIX=experience-images
 SECRET_KEY=${SECRET_KEY}
 AI_PROVIDER=gemini
 GEMINI_API_KEY=${GEMINI_KEY}
+VIDEO_COMPILER=local
+PIXABAY_API_KEY=${PIXABAY_API_KEY:-}
+PEXELS_API_KEY=${PEXELS_API_KEY:-}
+ENABLE_PEXELS_FALLBACK=true
 ENVEOF
     chown manike:manike .env
     chmod 600 .env

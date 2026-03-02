@@ -1,7 +1,7 @@
 import asyncio
 import json
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from app.core.auth import get_current_tenant_id, get_current_user
 from app.core.database import get_session
 from app.models.sql_models import (
@@ -11,6 +11,7 @@ from app.services.generators import ItineraryGenerator
 from app.services.matcher import match_image, match_clip
 from app.services.ai_itinerary_generator import AIItineraryGenerator
 from app.services.video_compiler import VideoCompilerFactory
+from app.services.cinematic_video_builder import cinematic_builder
 from app.chat.session import chat_session_store
 from app.providers.factory import ProviderFactory
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +33,11 @@ class ItineraryRequest(BaseModel):
     prompt: Optional[str] = None        # e.g. "3-day trip to Galle and Ella"
     destination: Optional[str] = None   # e.g. "Sri Lanka"
     days: Optional[int] = None          # e.g. 3
+
+
+class CompileVideoRequest(BaseModel):
+    cinematic: bool = False             # True → use CinematicVideoBuilder (map transitions + Pexels)
+    target_seconds: Optional[float] = None  # Override default 45-second target duration
 
 
 class ActivityResponse(BaseModel):
@@ -169,6 +175,7 @@ async def generate_itinerary(
     # ------------------------------------------------------------------
     db_activities = []
     used_image_ids: set = set()
+    used_clip_ids: set = set()
 
     for idx, raw in enumerate(raw_activities):
         # Build a rich query string for semantic search
@@ -181,10 +188,12 @@ async def generate_itinerary(
         query_text = " ".join(p for p in query_parts if p)
 
         matched_image = match_image(tenant_id, query_text, exclude_ids=used_image_ids)
-        matched_clip = match_clip(tenant_id, query_text)
+        matched_clip = match_clip(tenant_id, query_text, exclude_ids=used_clip_ids)
 
         if matched_image:
             used_image_ids.add(matched_image.id)
+        if matched_clip:
+            used_clip_ids.add(matched_clip.id)
 
         activity = ItineraryActivity(
             tenant_id=tenant_id,
@@ -308,15 +317,25 @@ async def get_itinerary(
 @router.post("/{itinerary_id}/compile-video")
 async def compile_video(
     itinerary_id: str,
+    req: CompileVideoRequest = Body(default_factory=CompileVideoRequest),
     tenant_id: str = Depends(get_current_tenant_id),
     session: Session = Depends(get_session)
 ):
     """
-    Compile the final cinematic video:
-    1. Collect all cinematic clips from the itinerary (in order)
-    2. Stitch them together with transitions
-    3. Upload to S3
-    4. Save the final video record in the database
+    Compile the final video for an itinerary.
+
+    **Standard mode** (default, `cinematic=false`):
+    Concatenates the Milvus-matched clips already linked to each activity.
+    Supports both local FFmpeg and async Cloud Run compilation.
+
+    **Cinematic mode** (`cinematic=true`):
+    Full pipeline with:
+    - Animated map transitions between locations (generated from itinerary rides[])
+    - Automatic Pexels royalty-free clip download for activities with no match
+    - Clip pacing tuned to hit `target_seconds` (default 45 s for a 3-day trip)
+    - Portrait 720×1280 output, H.264/AAC
+    Requires `PEXELS_API_KEY` env var for the fallback download feature.
+    Requires the itinerary to have been generated with the AI flow (rich_itinerary_json).
     """
     itinerary = session.get(Itinerary, itinerary_id)
     if not itinerary or itinerary.tenant_id != tenant_id:
@@ -354,37 +373,101 @@ async def compile_video(
         .order_by(ItineraryActivity.order_index)
     ).all()
 
-    # Collect clip URLs (skip activities with no clip)
-    clip_urls = [act.cinematic_clip_url for act in activities if act.cinematic_clip_url]
+    # ------------------------------------------------------------------
+    # CINEMATIC MODE — map transitions + Pexels fallback + pacing
+    # ------------------------------------------------------------------
+    if req.cinematic and itinerary.rich_itinerary_json:
+        target_secs = req.target_seconds or 45.0
+        compiler = VideoCompilerFactory.create()
 
-    if not clip_urls:
-        raise HTTPException(
-            status_code=400,
-            detail="No cinematic clips are tagged to this itinerary. Upload clips and regenerate."
-        )
+        # Cloud Run async path — dispatch job and return 202 immediately
+        if hasattr(compiler, "compile_cinematic"):
+            result = compiler.compile_cinematic(
+                itinerary_id=itinerary.id,
+                tenant_id=tenant_id,
+                target_seconds=target_secs,
+            )
+            video_url = result.video_url or ""
+            clips_used = None
+            status = result.status
+            extra_info = {"mode": "cinematic", "is_async": True}
 
-    # Compile via the configured backend (local FFmpeg or Cloud Run Job).
-    # Run in a thread executor so the blocking FFmpeg subprocess calls don't
-    # stall the async event loop.
-    compiler = VideoCompilerFactory.create()
-    loop = asyncio.get_event_loop()
-    try:
-        result = await loop.run_in_executor(
-            None, lambda: compiler.compile(clip_urls, itinerary.id, tenant_id)
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        # Local sync path — run the full pipeline in a thread executor
+        else:
+            rich_itinerary = json.loads(itinerary.rich_itinerary_json)
+            loop = asyncio.get_event_loop()
+            try:
+                build_result = await loop.run_in_executor(
+                    None,
+                    lambda: cinematic_builder.build(
+                        itinerary_id=itinerary.id,
+                        tenant_id=tenant_id,
+                        rich_itinerary=rich_itinerary,
+                        activities=list(activities),
+                        session=session,
+                        target_total_seconds=target_secs,
+                    )
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
 
-    # Save to DB
+            video_url = build_result.video_url
+            clips_used = build_result.clips_used
+            status = "compiled"
+            extra_info = {
+                "map_transitions_generated": build_result.map_transitions_generated,
+                "pexels_downloads": build_result.pexels_downloads,
+                "total_duration": build_result.total_duration,
+                "mode": "cinematic",
+            }
+
+    # ------------------------------------------------------------------
+    # LEGACY MODE — collect existing clip URLs and concat
+    # ------------------------------------------------------------------
+    else:
+        if req.cinematic and not itinerary.rich_itinerary_json:
+            import logging
+            logging.getLogger(__name__).warning(
+                "cinematic=true requested but itinerary %s has no rich_itinerary_json — "
+                "falling back to legacy compilation",
+                itinerary_id
+            )
+
+        clip_urls = [act.cinematic_clip_url for act in activities if act.cinematic_clip_url]
+
+        if not clip_urls:
+            raise HTTPException(
+                status_code=400,
+                detail="No cinematic clips are tagged to this itinerary. Upload clips and regenerate."
+            )
+
+        compiler = VideoCompilerFactory.create()
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: compiler.compile(clip_urls, itinerary.id, tenant_id)
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        video_url = result.video_url or ""
+        clips_used = len(clip_urls)
+        status = result.status
+        extra_info = {"mode": "legacy", "is_async": result.is_async}
+
+    # ------------------------------------------------------------------
+    # Persist FinalVideo record
+    # ------------------------------------------------------------------
     final_video = FinalVideo(
         tenant_id=tenant_id,
         itinerary_id=itinerary.id,
-        video_url=result.video_url or "",
-        status=result.status,
+        video_url=video_url,
+        status=status,
     )
     session.add(final_video)
 
-    if not result.is_async:
+    is_async = extra_info.get("is_async", False)
+    if not is_async:
         itinerary.status = "video_compiled"
         session.add(itinerary)
 
@@ -406,24 +489,27 @@ async def compile_video(
                     "video_url": existing_final.video_url,
                     "itinerary_id": existing_final.itinerary_id,
                     "status": existing_final.status,
-                    "clips_used": len(clip_urls),
+                    "clips_used": clips_used,
                 }
             }
         raise
 
     response = {
-        "message": "Final cinematic video compiled successfully" if not result.is_async
-                   else "Video compilation started — poll GET /itinerary/{id} for status",
+        "message": (
+            "Cinematic video compiled successfully" if not is_async
+            else "Video compilation started — poll GET /itinerary/{id}/video-status"
+        ),
         "final_video": {
             "id": final_video.id,
             "video_url": final_video.video_url,
             "itinerary_id": final_video.itinerary_id,
             "status": final_video.status,
-            "clips_used": len(clip_urls),
+            "clips_used": clips_used,
+            **extra_info,
         }
     }
 
-    if result.is_async:
+    if is_async:
         from fastapi.responses import JSONResponse
         return JSONResponse(content=response, status_code=202)
 

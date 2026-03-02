@@ -19,3 +19,11 @@ google-genai
 anthropic
 # Video compiler (cloudrun mode only)
 google-cloud-run
+# Cinematic video generation: map animations + royalty-free media
+matplotlib>=3.8.0
+Pillow>=10.4.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+contextily>=1.4.0
+numpy>=1.26.0
+pyproj>=3.6.0

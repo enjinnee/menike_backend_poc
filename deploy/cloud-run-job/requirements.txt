@@ -1,5 +1,17 @@
+# Shared (both legacy and cinematic modes)
 google-cloud-storage
 sqlmodel
 psycopg2-binary
 python-dotenv
 certifi
+requests
+
+# Cinematic mode — map animation + royalty-free media download
+matplotlib>=3.8.0
+Pillow>=10.4.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+contextily>=1.4.0
+numpy>=1.26.0
+pyproj>=3.6.0
+pymilvus

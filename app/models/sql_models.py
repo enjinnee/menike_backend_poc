@@ -67,6 +67,7 @@ class CinematicClip(SQLModel, table=True):
     type: Optional[str] = None             # e.g. "drone", "timelapse", "underwater", "ground"
     reviews: Optional[str] = None          # e.g. "4.9/5 - Perfect for travel reels"
     approximate: Optional[str] = None      # e.g. "Duration: 30s, Resolution: 4K"
+    source: Optional[str] = Field(default="uploaded")  # "uploaded" | "pexels" | "map_transition"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -115,6 +116,22 @@ class FinalVideo(SQLModel, table=True):
     video_url: str                          # S3 URL of final compiled video
     duration: Optional[float] = None        # total seconds
     status: str = "compiled"                # compiled, failed
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# MapTransition — cached animated map clips for location-to-location routes
+# ---------------------------------------------------------------------------
+class MapTransition(SQLModel, table=True):
+    __tablename__ = "map_transition"
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(foreign_key="tenant.id", index=True)
+    cache_key: str = Field(index=True)      # "{lat1:.4f}_{lon1:.4f}_{lat2:.4f}_{lon2:.4f}"
+    from_location: str
+    to_location: str
+    transport_type: Optional[str] = None    # "car" | "train" | "flight" | "bus" | "ferry"
+    video_url: str                          # GCS URL of the generated map animation clip
+    duration: float                         # seconds (typically 2.5)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

@@ -35,6 +35,11 @@ DATABASE_URL="${DATABASE_URL:?Set DATABASE_URL}"
 GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-manike-ai-media}"
 GCS_BASE_PREFIX="${GCS_BASE_PREFIX:-experience-images}"
 
+# Cinematic mode settings (baked into the Job — apply to all executions)
+PIXABAY_API_KEY="${PIXABAY_API_KEY:-}"          # primary: free key from pixabay.com/api
+PEXELS_API_KEY="${PEXELS_API_KEY:-}"            # secondary: free key from pexels.com/api
+ENABLE_PEXELS_FALLBACK="${ENABLE_PEXELS_FALLBACK:-true}"
+
 # Service account that runs the API server and needs permission to invoke this job.
 INVOKER_SA="${INVOKER_SA:-manike-app@${PROJECT_ID}.iam.gserviceaccount.com}"
 
@@ -110,7 +115,7 @@ COMMON_FLAGS=(
     --max-retries=2
     --vpc-connector="${VPC_CONNECTOR}"
     --vpc-egress=private-ranges-only
-    --set-env-vars="DATABASE_URL=${DATABASE_URL},GCS_BUCKET_NAME=${GCS_BUCKET_NAME},GCS_BASE_PREFIX=${GCS_BASE_PREFIX}"
+    --set-env-vars="DATABASE_URL=${DATABASE_URL},GCS_BUCKET_NAME=${GCS_BUCKET_NAME},GCS_BASE_PREFIX=${GCS_BASE_PREFIX},PIXABAY_API_KEY=${PIXABAY_API_KEY},PEXELS_API_KEY=${PEXELS_API_KEY},ENABLE_PEXELS_FALLBACK=${ENABLE_PEXELS_FALLBACK}"
 )
 
 if gcloud run jobs describe "${JOB_NAME}" --region="${REGION}" --project="${PROJECT_ID}" &>/dev/null; then
