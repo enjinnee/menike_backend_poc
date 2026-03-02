@@ -230,6 +230,6 @@ async def search_clips(
                 tags=meta.get("tags", ""),
                 video_url=meta.get("video_url", ""),
                 duration=meta.get("duration"),
-                similarity_score=round(1 - hit.distance, 4),
+                similarity_score=round(hit.distance, 4),
             ))
     return output

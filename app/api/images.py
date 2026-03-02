@@ -206,6 +206,6 @@ async def search_images(
                 name=meta.get("name", ""),
                 tags=meta.get("tags", ""),
                 image_url=meta.get("image_url", ""),
-                similarity_score=round(1 - hit.distance, 4),  # COSINE: lower distance = higher similarity
+                similarity_score=round(hit.distance, 4),  # pymilvus COSINE: hit.distance IS similarity [-1,1]
             ))
     return output

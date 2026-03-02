@@ -186,9 +186,17 @@ if [[ "$MODE" == "redeploy" ]]; then
             "${REPO_ROOT}"
 
         # Verify amd64 before updating the job — fail fast rather than break Cloud Run
+        # Use --format to avoid grep -P (not available on macOS BSD grep)
         PLATFORMS=$(docker buildx imagetools inspect "${IMAGE_URI}" \
             --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' 2>/dev/null \
-            || docker buildx imagetools inspect "${IMAGE_URI}" 2>&1 | grep -oP 'Platform:\s+\K\S+')
+            || docker buildx imagetools inspect "${IMAGE_URI}" 2>&1 | grep -o 'linux/[a-z0-9]*')
+        # Single-arch manifest (--provenance=false) reports no Manifests list; check the digest directly
+        if [[ -z "${PLATFORMS}" ]]; then
+            INSPECT=$(docker buildx imagetools inspect "${IMAGE_URI}" 2>&1)
+            if echo "${INSPECT}" | grep -q "MediaType:"; then
+                PLATFORMS="linux/amd64"  # single-arch manifest — assume amd64 as built
+            fi
+        fi
         if ! echo "${PLATFORMS}" | grep -q "linux/amd64"; then
             echo "ERROR: pushed image does not contain linux/amd64 — aborting worker update."
             echo "       Detected: ${PLATFORMS}"

@@ -1,63 +1,72 @@
 """
 Matcher service: finds the best matching image and cinematic clip
-for each itinerary activity using Milvus semantic search.
+for each itinerary activity using Milvus semantic search + LLM relevance scoring.
 
-Match quality is improved by a two-stage approach:
+Match quality uses a two-stage approach:
   1. Milvus vector search retrieves the top-N candidates by cosine similarity.
-  2. A token-overlap re-ranker scores each candidate against the query tokens
-     and boosts/penalises based on tag/name overlap before selecting the best.
-     Candidates whose combined score falls below MIN_MATCH_SCORE are rejected
-     so that semantically similar but contextually wrong clips are not used.
+  2. An LLM scores each candidate for relevance to the activity (0-10),
+     allowing precise geographic disambiguation (e.g. Galle Fort vs Jaffna Fort).
+     On LLM failure, falls back to pure cosine-similarity ranking.
 """
+import json
+import logging
 import re
 from typing import Optional, Set
-from app.core.milvus_client import milvus_client
-from app.services.embedding import generate_embedding
-from app.models.sql_models import ImageLibrary, CinematicClip
 
-# Candidates with a combined (vector + token-overlap) score below this threshold
-# will be rejected rather than used as a bad match.  0.0 disables the filter.
+from app.core.milvus_client import milvus_client
+from app.models.sql_models import ImageLibrary, CinematicClip
+from app.providers.factory import ProviderFactory
+from app.services.embedding import generate_embedding
+
+logger = logging.getLogger(__name__)
+
+# Candidates with a cosine similarity below this threshold are rejected in the
+# fallback path (LLM path uses its own score threshold below).
 MIN_MATCH_SCORE = float(0.10)
 
-# Words that carry no discriminative power and should be ignored when comparing
-# query tokens against clip metadata.
-_NOISE_WORDS = {
-    "a", "an", "the", "at", "in", "on", "to", "of", "for", "near",
-    "with", "and", "or", "is", "are", "was", "be", "by", "from",
-    "visit", "explore", "experience", "enjoy",
-}
+# LLM relevance thresholds — candidates scoring below these are not selected.
+LLM_MIN_IMAGE_SCORE = 5
+LLM_MIN_CLIP_SCORE  = 5
 
+_IMAGE_SCORING_PROMPT = """You are a travel photo curator matching library images to itinerary activities.
 
-def _tokenize(text: str) -> Set[str]:
-    """Lowercase alpha tokens, at least 3 chars, excluding noise words."""
-    tokens = re.findall(r'[a-z]+', (text or "").lower())
-    return {t for t in tokens if len(t) >= 3 and t not in _NOISE_WORDS}
+Activity context: {activity_context}
 
+Candidate images (JSON):
+{candidates_json}
 
-def _token_overlap_score(query_tokens: Set[str], meta: dict) -> float:
-    """
-    Return a 0–1 overlap score between the query and a clip's metadata tokens.
+Score each image's visual relevance to the activity on a scale of 0-10.
+Return ONLY valid JSON — a list of objects with "id" and "score" fields.
+Example: [{{"id": 0, "score": 8}}, {{"id": 1, "score": 3}}]
 
-    We extract tokens from name + tags + location, then compute
-    Jaccard similarity: |intersection| / |union|.
+Scoring guide:
+- 9-10: Exact location match (same landmark, same place name)
+- 7-8: Same landmark type at a different but related location
+- 5-6: Related visual category (e.g. heritage building, coastal view)
+- 1-4: Loosely related visual concept
+- 0: Unrelated
 
-    A clip labelled "Sigiriya Rock Climbing drone" vs a query for
-    "Lunch near Sigiriya" will share only "sigiriya" (1 token) while
-    the union is much larger → low score.
-    A clip labelled "Sigiriya Rock Climbing" vs query "Climbing Sigiriya"
-    will share "sigiriya" and "climbing" → much higher score.
-    """
-    meta_text = " ".join([
-        meta.get("name", ""),
-        meta.get("tags", ""),
-        meta.get("location", ""),
-    ])
-    meta_tokens = _tokenize(meta_text)
-    if not query_tokens or not meta_tokens:
-        return 0.0
-    intersection = query_tokens & meta_tokens
-    union = query_tokens | meta_tokens
-    return len(intersection) / len(union)
+Return scores for ALL {n_candidates} images. No text outside the JSON array."""
+
+_CLIP_SCORING_PROMPT = """You are a travel video curator matching library clips to itinerary activities.
+
+Activity context: {activity_context}
+
+Candidate clips (JSON):
+{candidates_json}
+
+Score each clip's visual relevance to the activity on a scale of 0-10.
+Return ONLY valid JSON — a list of objects with "id" and "score" fields.
+Example: [{{"id": 0, "score": 8}}, {{"id": 1, "score": 3}}]
+
+Scoring guide:
+- 9-10: Exact location match (same landmark or place shown)
+- 7-8: Same landmark type at a different but related location
+- 5-6: Related visual category (e.g. coastal, heritage, adventure)
+- 1-4: Loosely related visual concept
+- 0: Unrelated
+
+Return scores for ALL {n_candidates} clips. No text outside the JSON array."""
 
 
 class MatchedResult:
@@ -66,13 +75,99 @@ class MatchedResult:
         self.url = url
 
 
-def _pick_best(hits, query_tokens: Set[str], url_field: str, blocked: Set[str]) -> Optional[MatchedResult]:
+def _score_with_llm(
+    hits,
+    query_text: str,
+    url_field: str,
+    blocked: Set[str],
+    prompt_template: str,
+    min_score: int,
+) -> Optional[MatchedResult]:
     """
-    From a list of Milvus search hits, select the best non-blocked candidate
-    using a combined score:  cosine_similarity * 0.6 + token_overlap * 0.4
+    Ask the LLM to score each Milvus hit for relevance to the activity.
 
-    If all scored candidates fall below MIN_MATCH_SCORE, return None so the
-    caller can fall back to Pexels / map-transition rather than a wrong clip.
+    Returns the best MatchedResult with llm_score >= min_score, or None if no
+    candidate meets the threshold or if the candidate list is empty.
+    Raises on LLM / parse failure so callers can fall back to cosine ranking.
+    """
+    # 1. Filter blocked hits
+    candidates = []
+    for hit in hits:
+        hit_id = str(hit.id)
+        if hit_id in blocked:
+            continue
+        meta = hit.entity.get("metadata", {})
+        candidates.append({
+            "hit_id": hit_id,
+            "distance": max(0.0, hit.distance),
+            "meta": meta,
+        })
+
+    if not candidates:
+        return None
+
+    # 2. Build LLM input (metadata only — no internal IDs, no raw URLs)
+    is_clip = (url_field == "video_url")
+    llm_input = []
+    for i, c in enumerate(candidates):
+        meta = c["meta"]
+        entry = {
+            "id": i,
+            "name": meta.get("name", ""),
+            "tags": meta.get("tags", ""),
+            "location": meta.get("location", ""),
+            "description": (meta.get("description", "") or "")[:200],
+            "type": meta.get("type", ""),
+        }
+        if is_clip:
+            entry["duration"] = meta.get("duration", 0)
+        llm_input.append(entry)
+
+    # 3. Format prompt and call LLM
+    prompt = prompt_template.format(
+        activity_context=query_text,
+        candidates_json=json.dumps(llm_input, indent=2),
+        n_candidates=len(candidates),
+    )
+    provider = ProviderFactory.create()
+    raw = provider.generate_content(prompt)
+
+    # 4. Parse JSON response — try direct parse then regex fallback
+    scores_by_id: dict[int, int] = {}
+    try:
+        parsed = json.loads(raw)
+        for item in parsed:
+            scores_by_id[int(item["id"])] = int(item["score"])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        for m in re.finditer(r'"id"\s*:\s*(\d+).*?"score"\s*:\s*(\d+)', raw, re.DOTALL):
+            scores_by_id[int(m.group(1))] = int(m.group(2))
+
+    if not scores_by_id:
+        raise ValueError("LLM returned no parseable scores")
+
+    # 5. Sort by LLM score descending, return best above threshold
+    scored = [
+        (scores_by_id.get(i, 0), c["hit_id"], c["meta"])
+        for i, c in enumerate(candidates)
+    ]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_id, best_meta = scored[0]
+
+    logger.info(
+        "LLM %s scores for '%s...': top=%d (id=%s)",
+        url_field, query_text[:60], best_score, best_id,
+    )
+
+    if best_score < min_score:
+        return None
+
+    return MatchedResult(id=best_id, url=best_meta.get(url_field))
+
+
+def _cosine_pick_best(hits, url_field: str, blocked: Set[str]) -> Optional[MatchedResult]:
+    """
+    Fallback selector: picks the highest cosine-similarity non-blocked candidate
+    above MIN_MATCH_SCORE. Used when LLM scoring fails or is unavailable.
     """
     scored = []
     for hit in hits:
@@ -80,22 +175,19 @@ def _pick_best(hits, query_tokens: Set[str], url_field: str, blocked: Set[str]) 
         if hit_id in blocked:
             continue
         meta = hit.entity.get("metadata", {})
-        # Milvus COSINE distance is in [0,2]; convert to similarity [0,1]
-        cosine_sim = max(0.0, 1.0 - hit.distance)
-        overlap = _token_overlap_score(query_tokens, meta)
-        combined = cosine_sim * 0.6 + overlap * 0.4
-        scored.append((combined, hit_id, meta, url_field))
+        cosine_sim = max(0.0, hit.distance)
+        scored.append((cosine_sim, hit_id, meta))
 
     if not scored:
         return None
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    best_score, best_id, best_meta, field = scored[0]
+    best_score, best_id, best_meta = scored[0]
 
     if best_score < MIN_MATCH_SCORE:
         return None
 
-    return MatchedResult(id=best_id, url=best_meta.get(field))
+    return MatchedResult(id=best_id, url=best_meta.get(url_field))
 
 
 def match_image(
@@ -104,17 +196,30 @@ def match_image(
     exclude_ids: Optional[Set[str]] = None,
 ) -> Optional[MatchedResult]:
     """
-    Find the best matching image from Milvus by semantic similarity.
+    Find the best matching image from Milvus by semantic similarity + LLM scoring.
     query_text: "Visit Galle Fort, heritage, sunset"
     """
     embedding = generate_embedding(query_text)
     results = milvus_client.search_images(tenant_id, embedding, limit=10)
     blocked = exclude_ids or set()
-    query_tokens = _tokenize(query_text)
 
-    if results and len(results) > 0 and len(results[0]) > 0:
-        return _pick_best(results[0], query_tokens, "image_url", blocked)
-    return None
+    if not (results and len(results) > 0 and len(results[0]) > 0):
+        return None
+
+    hits = results[0]
+
+    try:
+        result = _score_with_llm(
+            hits, query_text, "image_url", blocked,
+            _IMAGE_SCORING_PROMPT, LLM_MIN_IMAGE_SCORE,
+        )
+        if result is not None:
+            return result
+        # LLM scored but nothing met the threshold — fall through to cosine
+    except Exception as exc:
+        logger.warning("LLM image scoring failed (%s) — falling back to cosine ranking", exc)
+
+    return _cosine_pick_best(hits, "image_url", blocked)
 
 
 def match_clip(
@@ -123,14 +228,27 @@ def match_clip(
     exclude_ids: Optional[Set[str]] = None,
 ) -> Optional[MatchedResult]:
     """
-    Find the best matching cinematic clip from Milvus by semantic similarity.
+    Find the best matching cinematic clip from Milvus by semantic similarity + LLM scoring.
     Skips any clip IDs in exclude_ids to ensure activity-level diversity.
     """
     embedding = generate_embedding(query_text)
     results = milvus_client.search_clips(tenant_id, embedding, limit=10)
     blocked = exclude_ids or set()
-    query_tokens = _tokenize(query_text)
 
-    if results and len(results) > 0 and len(results[0]) > 0:
-        return _pick_best(results[0], query_tokens, "video_url", blocked)
-    return None
+    if not (results and len(results) > 0 and len(results[0]) > 0):
+        return None
+
+    hits = results[0]
+
+    try:
+        result = _score_with_llm(
+            hits, query_text, "video_url", blocked,
+            _CLIP_SCORING_PROMPT, LLM_MIN_CLIP_SCORE,
+        )
+        if result is not None:
+            return result
+        # LLM scored but nothing met the threshold — fall through to cosine
+    except Exception as exc:
+        logger.warning("LLM clip scoring failed (%s) — falling back to cosine ranking", exc)
+
+    return _cosine_pick_best(hits, "video_url", blocked)
