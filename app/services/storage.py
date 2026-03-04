@@ -13,9 +13,15 @@ class StorageService:
     def __init__(self):
         self.bucket_name = os.getenv("GCS_BUCKET_NAME", "manike-ai-media")
         self.base_prefix = os.getenv("GCS_BASE_PREFIX", "experience-images").strip("/")
-        self.credentials, _ = google.auth.default()
-        self.client = storage.Client(credentials=self.credentials)
-        self.bucket = self.client.bucket(self.bucket_name)
+        self._client = None
+        self._bucket = None
+
+    def _get_bucket(self):
+        if self._client is None:
+            credentials, _ = google.auth.default()
+            self._client = storage.Client(credentials=credentials)
+            self._bucket = self._client.bucket(self.bucket_name)
+        return self._bucket
 
     def _build_key(self, remote_path: str) -> str:
         cleaned_path = remote_path.strip("/")
@@ -28,7 +34,7 @@ class StorageService:
 
     def upload_file(self, local_path: str, remote_path: str) -> str:
         key = self._build_key(remote_path)
-        blob = self.bucket.blob(key)
+        blob = self._get_bucket().blob(key)
         try:
             blob.upload_from_filename(local_path)
         except Exception as exc:
@@ -37,7 +43,7 @@ class StorageService:
 
     def upload_bytes(self, content: bytes, remote_path: str, content_type: str | None = None) -> str:
         key = self._build_key(remote_path)
-        blob = self.bucket.blob(key)
+        blob = self._get_bucket().blob(key)
         try:
             blob.upload_from_string(content, content_type=content_type)
         except Exception as exc:

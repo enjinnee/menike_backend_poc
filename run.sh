@@ -52,6 +52,14 @@ PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.versi
 ok "Found Python ${PY_VERSION}"
 
 # ─── Create virtual environment ──────────────────────────────────────────────
+if [ -d "$VENV_DIR" ]; then
+  # Detect stale shebangs (e.g. after project directory rename)
+  if ! "$PIP" --version &>/dev/null 2>&1; then
+    warn "Existing venv appears broken (stale shebang) — recreating..."
+    rm -rf "$VENV_DIR"
+  fi
+fi
+
 if [ ! -d "$VENV_DIR" ]; then
   step "Creating virtual environment"
   python3 -m venv "$VENV_DIR"
