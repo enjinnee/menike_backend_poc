@@ -338,6 +338,15 @@ success ".env validated"
 # ══════════════════════════════════════════════════════════════════════
 VENV_DIR="$REPO_ROOT/.venv"
 
+if [[ -d "$VENV_DIR" ]]; then
+  # Detect a broken venv (e.g. copied from another machine with wrong interpreter path)
+  VENV_PYTHON="$VENV_DIR/bin/python"
+  if [[ ! -x "$VENV_PYTHON" ]] || ! "$VENV_PYTHON" -c "import sys" &>/dev/null 2>&1; then
+    warn "Existing venv at $VENV_DIR appears broken — recreating..."
+    rm -rf "$VENV_DIR"
+  fi
+fi
+
 if [[ ! -d "$VENV_DIR" ]]; then
   info "Creating virtual environment at $VENV_DIR..."
   python3 -m venv "$VENV_DIR"
