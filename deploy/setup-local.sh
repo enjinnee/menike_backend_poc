@@ -339,9 +339,13 @@ success ".env validated"
 VENV_DIR="$REPO_ROOT/.venv"
 
 if [[ -d "$VENV_DIR" ]]; then
-  # Detect a broken venv (e.g. copied from another machine with wrong interpreter path)
+  # Detect a broken venv — handles stale shebangs when the project root was
+  # renamed or the venv was moved (e.g. menike_backend_poc → menike_backend).
+  # Check both python and pip since pip is a script whose shebang can break.
   VENV_PYTHON="$VENV_DIR/bin/python"
-  if [[ ! -x "$VENV_PYTHON" ]] || ! "$VENV_PYTHON" -c "import sys" &>/dev/null 2>&1; then
+  VENV_PIP_BIN="$VENV_DIR/bin/pip"
+  if [[ ! -x "$VENV_PYTHON" ]] || ! "$VENV_PYTHON" -c "import sys" &>/dev/null 2>&1 \
+     || [[ ! -x "$VENV_PIP_BIN" ]] || ! "$VENV_PIP_BIN" --version &>/dev/null 2>&1; then
     warn "Existing venv at $VENV_DIR appears broken — recreating..."
     rm -rf "$VENV_DIR"
   fi
